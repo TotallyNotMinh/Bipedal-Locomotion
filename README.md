@@ -39,11 +39,11 @@ In real-world deployment, physical parameters such as ground friction $\mu$, con
 
 ## 2. Procedural Diverse Terrain & Depth Map Analysis
 
-The training environment generates a reproducible, multi-subterrain heightfield arena ($72\text{ m} \times 72\text{ m}$, $5\text{ cm}$ horizontal cell resolution). Terrains are organized into 5 difficulty levels with **continuous difficulty scaling $d \in [0, 1]$**.
+The training environment generates a reproducible singular heightfield arena ($80\text{ m} \times 80\text{ m}$, $8\text{ cm}$ horizontal cell resolution). Terrains are organized into 5 difficulty levels with **continuous difficulty scaling $d \in [0, 1]$**.
 
 ### Top-Down Depth Maps of All Singular Terrains at Maximum Difficulty ($d=1.0$)
 
-Each environment instance is generated using **one singular terrain category** (with dimensions $32\text{ m} \times 32\text{ m}$, $5\text{ cm}$ resolution). The figure below shows the top-down elevation depth maps (in meters) for all five terrain categories generated at maximum difficulty ($d=1.0$):
+Each environment instance is generated using **one singular terrain category** (with dimensions $80\text{ m} \times 80\text{ m}$, $8\text{ cm}$ resolution). The figure below shows the top-down elevation depth maps (in meters) for all five terrain categories generated at maximum difficulty ($d=1.0$):
 
 ![All Terrain Categories at Max Difficulty](assets/terrain_all_categories_depth.png)
 
@@ -52,10 +52,10 @@ Each environment instance is generated using **one singular terrain category** (
 | Level | Category | Generation Method | Max Difficulty ($d=1.0$) Characteristics | Training Heading Rule |
 |:---:|:---|:---|:---|:---:|
 | **Level 0** | **Flat Ground** | Constant elevation ($0.0\text{ m}$) | Strictly flat ground ($0.0\text{ m}$). Used for baseline nominal walking. | Omnidirectional |
-| **Level 1** | **Gentle Slopes** | Linear elevation gradient | Slopes up to $12.4^\circ$ ($0.22$ gradient, $\approx 1.76\text{ m}$ elevation rise over $8\text{ m}$). | Uphill |
+| **Level 1** | **Gentle Slopes** | Linear elevation gradient | Slopes up to $10.2^\circ$ ($0.18$ gradient, elevation rise across $80\text{ m}$). | Uphill |
 | **Level 2** | **Rolling Hills** | Multi-octave continuous harmonic waves / Gaussian hills | Undulating peaks and valleys with amplitude up to $0.40\text{ m}$ ($0.80\text{ m}$ peak-to-trough). | Omnidirectional |
 | **Level 3** | **Rough Terrain** | High-frequency stepped random noise | Stepped terrain blocks with noise amplitude up to $\pm 0.10\text{ m}$ ($20\text{ cm}$ vertical variance). | Omnidirectional |
-| **Level 4** | **Steep Slopes & Obstacles** | Procedural ramps, stairs, and stepping stone platforms | Steep ramps up to $24.2^\circ$ ($0.45$ gradient, $\approx 3.6\text{ m}$ rise over $8\text{ m}$) and obstacle platforms up to $0.25\text{ m}$ height. | **Strictly Uphill** ($\vec{v} \cdot \hat{u} > 0$) |
+| **Level 4** | **Steep Slopes & Obstacles** | Procedural ramps, stairs, and stepping stone platforms | Steep ramps up to $19.3^\circ$ ($0.35$ gradient) and obstacle platforms up to $0.25\text{ m}$ height. | **Strictly Uphill** ($\vec{v} \cdot \hat{u} > 0$) |
 
 ---
 
@@ -63,7 +63,12 @@ Each environment instance is generated using **one singular terrain category** (
 
 The environment operates on **ONE singular terrain category for each rollout**, starting with strictly $0.0\%$ spawn probability on harder terrains and advancing sequentially:
 
-$$\text{Level 0: Flat} \xrightarrow[\text{all prereqs} \ge 90\%]{\text{Mastery}} \text{Level 1: Gentle Slopes} \xrightarrow[\text{all prereqs} \ge 90\%]{\text{Mastery}} \text{Level 2: Rolling Hills} \xrightarrow[\text{all prereqs} \ge 90\%]{\text{Mastery}} \text{Level 3: Rough Terrain} \xrightarrow[\text{all prereqs} \ge 90\%]{\text{Mastery}} \text{Level 4: Steep Slopes \& Obstacles}$$
+```text
+[Level 0: Flat] ──► [Level 1: Gentle Slopes] ──► [Level 2: Rolling Hills] ──► [Level 3: Rough Terrain] ──► [Level 4: Steep Slopes & Obstacles]
+       ▲                      ▲                         ▲                         ▲                         ▲
+       └──────────────────────┴─────────────────────────┴─────────────────────────┴─────────────────────────┘
+                               All Preceding Stages Must Maintain ≥ 90% Success Rate
+```
 
 ```text
 PPO Training Rollouts (Singular Terrain per Environment)
