@@ -1,0 +1,103 @@
+# Sequential Terrain Curriculum with Continuous Prerequisite Health Check & Targeted Intervention
+# An environment uses ONE singular terrain category for each rollout.
+# Harder stages start at strictly 0.0% spawn probability.
+
+terrain:
+  seed: 42
+
+  # Ordered terrain stages
+  stages:
+    - "flat"
+    - "gentle_slopes"
+    - "rolling_hills"
+    - "rough_terrain"
+    - "steep_slopes_obstacles"
+
+  # Arena dimensions (80m x 80m ensures >65m unobstructed forward runout without border collisions)
+  arena_size:
+    x: 80.0
+    y: 80.0
+  horizontal_scale: 0.08 # 8 cm per cell (1000x1000 grid points)
+  vertical_scale: 0.002
+  border_size: 4.0
+
+  # Safe spawn zone configuration
+  spawn_zone:
+    x_min: 5.0
+    x_max: 12.0
+    y_min: 25.0
+    y_max: 55.0
+
+  # Terrain Category Definitions & Continuous Scaling Parameters (d in [0, 1])
+  categories:
+    flat:
+      level: 0
+      description: "Constant elevation floor (Baseline)"
+
+    gentle_slopes:
+      level: 1
+      description: "Linear elevation gradient"
+      slope_min: 0.04   # ~2.3 deg at d=0
+      slope_max: 0.18   # ~10.2 deg at d=1
+      direction: "incline"
+
+    rolling_hills:
+      level: 2
+      description: "Continuous harmonic wave hills across 80m arena"
+      amplitude_min: 0.08 # 8 cm amplitude at d=0
+      amplitude_max: 0.40 # 40 cm amplitude at d=1
+      wavelength_min: 4.0 # meters
+      wavelength_max: 10.0 # meters
+      octaves: 3
+
+    rough_terrain:
+      level: 3
+      description: "Stepped high-frequency random noise"
+      noise_amplitude_min: 0.02 # 2 cm at d=0
+      noise_amplitude_max: 0.10 # 10 cm at d=1
+      step_size: 0.005
+
+    steep_slopes_obstacles:
+      level: 4
+      description: "Steep slopes and discrete obstacle platforms (strictly uphill along +x)"
+      uphill_only: true
+      max_heading_deviation_deg: 45.0
+      steep_slope_min: 0.12  # ~6.8 deg at d=0
+      steep_slope_max: 0.35  # ~19.3 deg at d=1
+      obstacle_height_min: 0.06 # 6 cm obstacles at d=0
+      obstacle_height_max: 0.25 # 25 cm obstacles at d=1
+      obstacle_width: 0.50
+      obstacle_spacing: 1.5
+
+# Adaptive Curriculum Manager Configuration
+curriculum:
+  # Rolling window size per category
+  per_stage_window_size: 50
+
+  # Prerequisite & Promotion Thresholds
+  thresholds:
+    prerequisite_success_rate: 0.90 # ALL preceding stages must maintain >= 90% success
+    frontier_mastery_success_rate: 0.90 # Frontier must sustain >= 90% success to graduate
+    min_avg_distance: 6.0          # Minimum forward distance (meters) for episode success
+    max_fall_rate: 0.20            # Max allowable fall rate
+
+  # Patience counters before shifting distribution (prevents high-frequency flickering/knee-jerk shifts)
+  patience:
+    intervention_patience: 3       # Consecutive checks below 90% required before shifting distribution to intervention
+    recovery_patience: 3           # Consecutive checks >= 90% required before restoring normal distribution
+    promotion_patience: 25         # Consecutive evaluations at d=1.0 required before unlocking next stage
+
+  # Targeted Intervention Configuration (Anti-Catastrophic Forgetting)
+  intervention:
+    enabled: true
+    failing_stage_focus_prob: 0.75 # 75% training weight shifted to failing prerequisite
+    anchor_retention_prob: 0.25    # 25% split among other unlocked stages to prevent forgetting them
+
+  # Normal Stage Retention Factor (when healthy)
+  retention_decay: 0.55            # Exponential decay factor for unlocked earlier stages
+  min_stage_prob: 0.05             # Minimum 5% sampling floor for all unlocked stages
+
+  # Continuous Difficulty Scaling (d in [0, 1] within stage)
+  step_size:
+    difficulty_inc: 0.05
+    difficulty_dec: 0.05

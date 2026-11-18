@@ -1,0 +1,86 @@
+# Running on Kaggle with Dual NVIDIA Tesla T4 GPUs
+
+This guide explains how to train and evaluate the Unitree G1 adaptive locomotion policy on **Kaggle Notebooks with Dual T4 GPUs (2 × 16GB VRAM)**.
+
+---
+
+## 1. Kaggle Notebook Settings
+
+In your Kaggle notebook, configure the following settings in the right-hand panel:
+
+1. **Accelerator:** Select **`GPU T4 x2`**.
+2. **Internet:** Turn **`Internet ON`** (required for downloading dependencies and MuJoCo Playground).
+3. **Environment:** Leave as Default / Latest.
+
+---
+
+## 2. One-Click Environment Setup
+
+In the first code cell of your Kaggle Notebook, run:
+
+```bash
+!bash setup_kaggle.sh
+```
+
+### What this script does:
+- Detects both Tesla T4 GPUs via `nvidia-smi`.
+- Configures memory management variables to prevent OOM errors:
+  ```bash
+  export XLA_PYTHON_CLIENT_PREALLOCATE=false
+  export XLA_PYTHON_CLIENT_MEM_FRACTION=0.85
+  export TF_FORCE_GPU_ALLOW_GROWTH=true
+  export CUDA_VISIBLE_DEVICES=0,1
+  ```
+- Installs JAX with CUDA 12 support (`jax[cuda12]`).
+- Installs `mujoco`, `mujoco-playground`, `brax`, `flax`, `optax`, `orbax-checkpoint`, and dependencies.
+- Runs a self-check verifying that JAX sees both GPU devices (`cuda(id=0)` and `cuda(id=1)`).
+
+---
+
+## 3. Verify Dual-GPU Acceleration & Throughput
+
+In the next cell, run the benchmark script:
+
+```bash
+!python scripts/benchmark_gpu.py --batch-size 4096 --steps 500
+```
+
+This will measure:
+- Multi-device discovery (`2 devices: Tesla T4`).
+- Environment sharding across GPUs (e.g. 2,048 environments per GPU).
+- JIT compilation time.
+- Total stepping throughput (steps/second).
+
+---
+
+## 4. Run Training with Diverse Procedural Terrain
+
+You can train any of the 4 experimental models defined in `PLAN-1.md`:
+- **`M1`**: Standard PPO baseline (current observation only)
+- **`M2`**: Parameter-capacity control MLP
+- **`M3`**: Causal History Stacking ($[o_t, h_t]$)
+- **`M4`**: Learned History Encoder ($z_t = f_\phi(h_t)$)
+
+### Example: Train M3 (History Stacking) on Dual T4:
+```bash
+!python scripts/train_kaggle.py \
+    --model M3 \
+    --terrain-config configs/terrain.yaml \
+    --num-envs 4096 \
+    --history-len 5 \
+    --seed 42 \
+    --output-dir results/m3_run
+```
+
+---
+
+## 5. Terrain Configuration & Customization
+
+The procedural terrain arena is configured in `configs/terrain.yaml`:
+- **Flat Ground:** Baseline reset & nominal walking (row 0 is always flat).
+- **Uniform Rough Ground:** Stepped height variations.
+- **Harmonic Perlin Ground:** Smooth multi-frequency undulations.
+- **Slopes & Ramps:** Inclines, declines, and pyramid slopes.
+- **Stationary Stairs:** Low-rise fixed steps for curriculum/stretch testing.
+
+All terrains are completely reproducible: the same seed generates the identical heightfield matrix and MuJoCo `<hfield>` asset.

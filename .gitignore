@@ -1,0 +1,16 @@
+# Python caches
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Experiment outputs, logs and checkpoints
+results/
+*.bin
+
+# Claude local settings
+.claude/
+
+# IDE / System
+.vscode/
+.idea/
+.DS_Store
