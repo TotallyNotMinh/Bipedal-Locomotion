@@ -84,3 +84,22 @@ The procedural terrain arena is configured in `configs/terrain.yaml`:
 - **Stationary Stairs:** Low-rise fixed steps for curriculum/stretch testing.
 
 All terrains are completely reproducible: the same seed generates the identical heightfield matrix and MuJoCo `<hfield>` asset.
+
+### Bounded M3 pilot in an existing runtime
+
+From the repository root, run the smoke check and pilot in sequence. Both use the installed Playground G1 joystick task, the configured terrain, seed 42, and five previous observation–action pairs.
+
+```bash
+python scripts/train_kaggle.py --model M3 --smoke &&
+python scripts/train_kaggle.py --model M3
+```
+
+The smoke run performs two optimizer updates in `results/m3_smoke/`. The pilot performs ten in `results/m3_pilot/`. Each uses one environment per visible JAX device by default. Use a fresh `--output-dir` for a repeat. `--num-timesteps` accepts an exact multiple of the rollout batch size, which the CLI reports for an incompatible budget.
+
+Each directory contains the compiled scene inputs, resolved dimensions and PPO settings, initial and trained evaluations on ten matched seeds, training metrics, and the Brax inference checkpoint. A successful fresh-process action check writes `reload.json`. The pilot samples the initial curriculum stage for the run and feeds completed training episodes into a curriculum update at its end.
+
+If the installed Playground package does not contain the Menagerie meshes, put
+the G1 STL files from the Menagerie revision declared by Playground in
+`results/m3_robot_assets/`. The pilot reads this directory as a fallback for
+meshes missing from the installed package. On a memory-constrained GPU, run
+the pilot with `XLA_PYTHON_CLIENT_PREALLOCATE=false` for that command.

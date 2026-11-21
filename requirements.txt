@@ -1,0 +1,5 @@
+# M3 uses the RSS 2025 JAX/MJX implementation of MuJoCo Playground.
+playground[cuda] @ git+https://github.com/google-deepmind/mujoco_playground.git@0ce4c2b9589101d239cc833c92dd5f7c8da67b9e#subdirectory=rss2025
+numpy
+PyYAML
+pytest

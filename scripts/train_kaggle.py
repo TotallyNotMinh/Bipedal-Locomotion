@@ -7,27 +7,15 @@ Supports:
 - Multi-device sharded rollouts via JAX
 """
 
-import os
-import sys
 import argparse
+import os
 from pathlib import Path
+import sys
 
-# Configure XLA memory management before JAX imports
-os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
-os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = "0.85"
-os.environ["TF_FORCE_GPU_ALLOW_GROWTH"] = "true"
-
-try:
-    import jax
-    import jax.numpy as jnp
-except ImportError:
-    jax = None
-    jnp = None
-import numpy as np
-
-from src.envs.terrain import TerrainGenerator
-from src.envs.terrain_utils import export_heightfield_to_mujoco_asset
-from src.envs.g1_terrain_env import UnifiedG1TerrainEnv, G1EnvConfig
+# Support both the documented script command and module execution.
+ROOT = Path(__file__).resolve().parents[1]
+if __package__ in (None, ""):
+    sys.path.insert(0, str(ROOT))
 
 
 def main():
@@ -41,15 +29,46 @@ def main():
                         help="Initial curriculum difficulty d in [0, 1]")
     parser.add_argument("--terrain-config", type=str, default="configs/terrain.yaml",
                         help="Path to terrain configuration YAML")
-    parser.add_argument("--num-envs", type=int, default=4096,
+    parser.add_argument("--num-envs", type=int, default=None,
                         help="Total parallel environments (sharded across GPUs)")
     parser.add_argument("--history-len", type=int, default=5,
                         help="Number of history timesteps (k)")
     parser.add_argument("--seed", type=int, default=42,
                         help="Master PRNG seed")
-    parser.add_argument("--output-dir", type=str, default="results/checkpoints",
+    parser.add_argument("--output-dir", type=str, default=None,
                         help="Checkpoint and logs output directory")
+    parser.add_argument("--num-timesteps", type=int, help="Exact M3 environment step budget")
+    parser.add_argument("--smoke", action="store_true", help="Run two M3 optimizer updates (pilot default: ten)")
     args = parser.parse_args()
+    if args.model == "M3":
+        if args.category is not None or args.difficulty != 0 or Path(args.terrain_config).resolve() != ROOT / "configs/terrain.yaml":
+            parser.error("M3 uses the established terrain configuration and curriculum")
+        if args.history_len < 1 or any(v is not None and v <= 0 for v in (args.num_envs, args.num_timesteps)):
+            parser.error("History length, environment count, and step budget must be positive")
+        if args.smoke and args.num_timesteps is not None:
+            parser.error("Choose either --smoke or an explicit --num-timesteps")
+        args.output_dir = args.output_dir or ("results/m3_smoke" if args.smoke else "results/m3_pilot")
+        try:
+            from src.training.m3_pilot import run
+        except ImportError as exc:
+            parser.exit(2, f"M3 needs the configured Playground/Brax runtime: {exc}\n")
+        run(args)
+        # Release the trainer's GPU allocations before verifying in a fresh interpreter.
+        os.execv(sys.executable, [sys.executable, "-m", "src.training.m3_pilot", args.output_dir])
+
+    if args.num_timesteps is not None or args.smoke:
+        parser.error("--num-timesteps and --smoke apply to M3")
+    os.environ.update(XLA_PYTHON_CLIENT_PREALLOCATE="false",
+                      XLA_PYTHON_CLIENT_MEM_FRACTION="0.85", TF_FORCE_GPU_ALLOW_GROWTH="true")
+    args.num_envs = args.num_envs or 4096
+    args.output_dir = args.output_dir or "results/checkpoints"
+    try:
+        import jax
+    except ImportError:
+        jax = None
+    from src.envs.terrain_utils import export_heightfield_to_mujoco_asset
+    from src.envs.g1_terrain_env import UnifiedG1TerrainEnv, G1EnvConfig
+
 
     print("==================================================================")
     print(" Unitree G1 Adaptive Locomotion Training (Kaggle Dual-T4)")
