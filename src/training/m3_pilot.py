@@ -171,6 +171,7 @@ def run(args):
         raise ValueError("Simulator observation shape disagrees with the M3 history contract")
 
     ppo = locomotion_params.brax_ppo_config(TASK).to_dict()
+    ppo["learning_rate"] = 0.0001
     network = ppo.pop("network_factory")
     unit = nenv * ppo["unroll_length"] * ppo["action_repeat"]
     budget = args.num_timesteps or (2 if args.smoke else 10) * unit
