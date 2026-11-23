@@ -5,6 +5,7 @@ import shutil
 import statistics
 import subprocess
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -39,23 +40,37 @@ def completed_run(tmp_path):
 
 @pytest.mark.parametrize("has_m3_env", [True, False])
 def test_training_python_when_kernel_lacks_brax(tmp_path, monkeypatch, has_m3_env):
-    m3_python = tmp_path / ".venv/bin/python"
+    repo = tmp_path / "checkout"
+    m3_python = repo / ".venv/bin/python"
     m3_python.parent.mkdir(parents=True)
     m3_python.touch(mode=0o755)
+    installed_python = tmp_path / "bipedal-m1-training/bin/python"
+    installs = []
 
-    def probe(command, **kwargs):
-        ready = has_m3_env and command[0] == str(m3_python)
+    def run(command, **kwargs):
+        if command[1:3] == ["-m", "venv"]:
+            installed_python.parent.mkdir(parents=True, exist_ok=True)
+            installed_python.touch(mode=0o755)
+        if command[1:3] == ["-m", "pip"]:
+            installs.append(command)
+        ready = command[0] == str(m3_python if has_m3_env else installed_python)
         return subprocess.CompletedProcess(command, 0 if ready else 1, "",
                                            "" if ready else "No module named 'brax'")
 
-    monkeypatch.setattr(subprocess, "run", probe)
-    scope = dict(repo=tmp_path, env={}, os=os, Path=Path, sys=sys, shutil=shutil, subprocess=subprocess)
+    monkeypatch.setattr(subprocess, "run", run)
+    scope = dict(repo=repo, run=repo / "results/m1", env={}, os=os, Path=Path, sys=sys,
+                 gettempdir=lambda: str(tmp_path),
+                 shutil=shutil, subprocess=subprocess)
+    exec(CELLS["training-python"], scope)
     if has_m3_env:
-        exec(CELLS["training-python"], scope)
         assert scope["training_python"] == str(m3_python)
+        assert installs == []
     else:
-        with pytest.raises(RuntimeError, match="No module named 'brax'"):
-            exec(CELLS["training-python"], scope)
+        assert scope["training_python"] == str(installed_python)
+        assert installs[0][3:5] == ["--python", str(installed_python)]
+        assert "brax==0.14.2" in installs[0]
+        exec(CELLS["training-python"], scope)
+        assert len(installs) == 1
 
 
 def test_m1_reports_without_meshes_or_reference(completed_run, monkeypatch, capsys):
@@ -91,15 +106,33 @@ def test_fresh_run_prefers_trung1311_mesh_directory(completed_run):
         assert (completed_run["meshes"] / mesh.name).read_bytes() == mesh.read_bytes()
 
 
-@pytest.mark.parametrize("devices,should_train", [
-    ([["gpu", "Tesla T4"], ["gpu", "Tesla T4"]], True),
-    ([["gpu", "Tesla T4"]], False),
-    ([["gpu", "NVIDIA L4"], ["gpu", "NVIDIA L4"]], False),
+@pytest.mark.parametrize("kinds,expected", [
+    (["Tesla T4", "Tesla T4"], True),
+    (["Tesla T4"], False),
+    (["NVIDIA L4", "NVIDIA L4"], False),
 ])
-def test_fresh_run_checks_two_t4s(completed_run, monkeypatch, devices, should_train):
+def test_training_python_checks_two_t4s(tmp_path, monkeypatch, kinds, expected):
+    devices = [SimpleNamespace(platform="gpu", device_kind=kind) for kind in kinds]
+    monkeypatch.setitem(sys.modules, "jax", SimpleNamespace(local_devices=lambda: devices))
+    monkeypatch.setitem(sys.modules, "src.training.m3_pilot", SimpleNamespace(run=None))
+    monkeypatch.setattr("importlib.metadata.version", lambda name: "test")
+    monkeypatch.setattr(sys, "argv", ["-c", "train"])
+    monkeypatch.setattr(subprocess, "run",
+                        lambda command, **kwargs: subprocess.CompletedProcess(command, 0, "", ""))
+    scope = dict(repo=tmp_path, run=tmp_path / "results/m1", env={}, os=os, Path=Path,
+                 gettempdir=lambda: str(tmp_path),
+                 sys=sys, shutil=shutil, subprocess=subprocess)
+    exec(CELLS["training-python"], scope)
+    if expected:
+        exec(scope["probe_code"], {})
+    else:
+        with pytest.raises(SystemExit, match="GPU T4 x2"):
+            exec(scope["probe_code"], {})
+
+
+def test_fresh_run_launches_with_selected_python(completed_run, monkeypatch):
     folder = completed_run["run"]
-    completed_run.update(run=folder.with_name("fresh"), json=json)
-    monkeypatch.setattr(subprocess, "check_output", lambda *a, **kw: json.dumps(devices))
+    completed_run.update(run=folder.with_name("fresh"), training_python="/training/bin/python")
     commands = []
 
     def train(command, **kwargs):
@@ -107,10 +140,6 @@ def test_fresh_run_checks_two_t4s(completed_run, monkeypatch, devices, should_tr
         folder.rename(completed_run["run"])
 
     monkeypatch.setattr(subprocess, "run", train)
-    if should_train:
-        exec(CELLS["m1-6"], completed_run)
-        assert commands[0][commands[0].index("--num-envs") + 1] == "8"
-    else:
-        with pytest.raises(RuntimeError, match="GPU T4 x2"):
-            exec(CELLS["m1-6"], completed_run)
-        assert commands == []
+    exec(CELLS["m1-6"], completed_run)
+    assert commands[0][0] == completed_run["training_python"]
+    assert commands[0][commands[0].index("--num-envs") + 1] == "8"

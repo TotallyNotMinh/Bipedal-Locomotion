@@ -112,10 +112,11 @@ for training. The first cell clones the `m3-kaggle` branch into
 `/kaggle/working/Bipedal-Locomotion` or reuses the existing branch checkout.
 The mesh cell copies missing STL files from
 `/kaggle/input/datasets/trung1311/robot-assets/results/m3_robot_assets`.
-It also accepts `m3-robot-assets.zip` or another extracted folder. The
-notebook checks that the training Python can import the PPO trainer. If the
-kernel reports a missing `brax`, run **Select the training Python**. For a
-custom M3 environment, set `m3_python` in that cell to its Python executable.
+It also accepts `m3-robot-assets.zip` or another extracted folder.
+**Set up the training environment** checks that the trainer imports and JAX
+sees both T4s. If no existing environment passes, it installs the training
+stack in a temporary environment for the session. Keep Internet enabled for
+the first install. For a custom M3 environment, set `m3_python` to its Python executable.
 The notebook verifies the final M1 checkpoint and prints its initial and trained
 evaluations. To compare later, attach the saved 1.6M-step M3 run and rerun
 the optional comparison cell. Set `reference` there if the run directory has
