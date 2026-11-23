@@ -67,3 +67,28 @@ def test_fresh_run_prefers_trung1311_mesh_directory(completed_run):
     exec(CELLS["mesh-input"], completed_run)
     for mesh in dataset.iterdir():
         assert (completed_run["meshes"] / mesh.name).read_bytes() == mesh.read_bytes()
+
+
+@pytest.mark.parametrize("devices,should_train", [
+    ([["gpu", "Tesla T4"], ["gpu", "Tesla T4"]], True),
+    ([["gpu", "Tesla T4"]], False),
+    ([["gpu", "NVIDIA L4"], ["gpu", "NVIDIA L4"]], False),
+])
+def test_fresh_run_checks_two_t4s(completed_run, monkeypatch, devices, should_train):
+    folder = completed_run["run"]
+    completed_run.update(run=folder.with_name("fresh"), json=json)
+    monkeypatch.setattr(subprocess, "check_output", lambda *a, **kw: json.dumps(devices))
+    commands = []
+
+    def train(command, **kwargs):
+        commands.append(command)
+        folder.rename(completed_run["run"])
+
+    monkeypatch.setattr(subprocess, "run", train)
+    if should_train:
+        exec(CELLS["m1-6"], completed_run)
+        assert commands[0][commands[0].index("--num-envs") + 1] == "8"
+    else:
+        with pytest.raises(RuntimeError, match="GPU T4 x2"):
+            exec(CELLS["m1-6"], completed_run)
+        assert commands == []
