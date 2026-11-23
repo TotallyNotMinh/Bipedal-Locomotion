@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 import shutil
 import statistics
@@ -32,8 +33,29 @@ def completed_run(tmp_path):
         write(folder, f"{stage}_evaluation.json", {"episodes": episodes})
     return dict(run=folder, repo=tmp_path, inputs=tmp_path / "input", seed=42,
                 num_envs=8, budget=1_600_000, env={}, statistics=statistics,
-                subprocess=subprocess, sys=sys,
+                subprocess=subprocess, sys=sys, training_python=sys.executable,
                 read=lambda path, name: json.loads((path / name).read_text()))
+
+
+@pytest.mark.parametrize("has_m3_env", [True, False])
+def test_training_python_when_kernel_lacks_brax(tmp_path, monkeypatch, has_m3_env):
+    m3_python = tmp_path / ".venv/bin/python"
+    m3_python.parent.mkdir(parents=True)
+    m3_python.touch(mode=0o755)
+
+    def probe(command, **kwargs):
+        ready = has_m3_env and command[0] == str(m3_python)
+        return subprocess.CompletedProcess(command, 0 if ready else 1, "",
+                                           "" if ready else "No module named 'brax'")
+
+    monkeypatch.setattr(subprocess, "run", probe)
+    scope = dict(repo=tmp_path, env={}, os=os, Path=Path, sys=sys, shutil=shutil, subprocess=subprocess)
+    if has_m3_env:
+        exec(CELLS["training-python"], scope)
+        assert scope["training_python"] == str(m3_python)
+    else:
+        with pytest.raises(RuntimeError, match="No module named 'brax'"):
+            exec(CELLS["training-python"], scope)
 
 
 def test_m1_reports_without_meshes_or_reference(completed_run, monkeypatch, capsys):
