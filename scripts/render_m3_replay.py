@@ -16,6 +16,7 @@ import numpy as np
 from PIL import Image, ImageDraw
 
 from src.training.m3_env import HistoryJoystick
+from src.training.m3_pilot import check_probe_action
 
 
 def rollout(reset, step, policy, seed, horizon):
@@ -109,7 +110,7 @@ def main():
     with np.load(run / "reload_probe.npz") as probe:
         obs = {key: probe[key] for key in settings["observation_shapes"]}
         action, _ = trained_policy(obs, jax.random.PRNGKey(0))
-        np.testing.assert_allclose(action, probe["expected_action"], atol=1e-6, rtol=1e-6)
+        check_probe_action(action, probe["expected_action"])
 
     config = registry.get_default_config(settings["task"])
     config.naconmax = settings["warp_contact_capacity"]

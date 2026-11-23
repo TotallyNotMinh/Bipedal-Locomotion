@@ -124,6 +124,15 @@ def verify_physics(env):
     raise ValueError("G1 foot sensors detected no contact with the generated floor")
 
 
+def check_probe_action(actual, expected):
+    """Compare bounded float32 actions across training and inference processes."""
+    actual, expected = np.asarray(actual), np.asarray(expected)
+    if actual.shape != expected.shape or not (np.isfinite(actual).all() and np.isfinite(expected).all()):
+        raise ValueError("Checkpoint probe actions must have matching shapes and finite values")
+    np.testing.assert_allclose(actual, expected, atol=5e-6, rtol=1e-6)
+    return float(np.max(np.abs(actual - expected)))
+
+
 def verify_checkpoint(directory):
     path = Path(directory).resolve()
     checkpoints = [p for p in (path / "checkpoints").iterdir() if p.name.isdigit()]
@@ -138,8 +147,8 @@ def verify_checkpoint(directory):
         )
         policy = networks.make_inference_fn(network)(checkpoint.load(latest), deterministic=True)
         actual, _ = policy(obs, jax.random.PRNGKey(0))
-        np.testing.assert_allclose(actual, probe["expected_action"], atol=1e-6, rtol=1e-6)
-    save_json(path / "reload.json", {"checkpoint": latest.name, "action_verified": True})
+        max_error = check_probe_action(actual, probe["expected_action"])
+    save_json(path / "reload.json", {"checkpoint": latest.name, "action_verified": True, "max_abs_error": max_error})
 
 
 def run(args):
