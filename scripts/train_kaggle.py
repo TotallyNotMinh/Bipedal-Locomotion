@@ -39,7 +39,11 @@ def main():
                         help="Checkpoint and logs output directory")
     parser.add_argument("--num-timesteps", type=int, help="Exact M1 or M3 environment step budget")
     parser.add_argument("--smoke", action="store_true", help="Run two PPO optimizer updates (pilot default: ten)")
+    parser.add_argument("--diagnose-ppo", action="store_true",
+                        help="Record M1 KL and action saturation at each PPO update")
     args = parser.parse_args()
+    if args.diagnose_ppo and args.model != "M1":
+        parser.error("--diagnose-ppo applies to M1")
     if args.history_len is None:
         args.history_len = 0 if args.model == "M1" else 5
     if args.model in ("M1", "M3"):
@@ -53,7 +57,7 @@ def main():
             parser.error("Environment count and step budget must be positive")
         if args.smoke and args.num_timesteps is not None:
             parser.error("Choose either --smoke or an explicit --num-timesteps")
-        kind = "smoke" if args.smoke else "pilot"
+        kind = "diagnostic" if args.diagnose_ppo else ("smoke" if args.smoke else "pilot")
         args.output_dir = args.output_dir or f"results/{args.model.lower()}_{kind}"
         try:
             from src.training.m3_pilot import run

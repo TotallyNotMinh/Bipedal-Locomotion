@@ -131,3 +131,23 @@ XLA_PYTHON_CLIENT_PREALLOCATE=false python -u scripts/train_kaggle.py \
   --model M1 --num-envs 8 --seed 42 --num-timesteps 1600000 \
   --output-dir results/m1_1p6m_env8_lr1e4
 ```
+
+### Diagnose the M1 PPO updates
+
+In the configured training environment, run the 50-update M1 diagnostic.
+It uses the same simulator and PPO settings, with one logging interval per
+update and separate outputs.
+
+```bash
+XLA_PYTHON_CLIENT_PREALLOCATE=false python -u scripts/train_kaggle.py \
+  --model M1 --num-envs 8 --seed 42 --diagnose-ppo \
+  --output-dir results/m1_ppo_diagnostic
+```
+
+`ppo_diagnostic.jsonl` contains one row per optimizer update. Each row includes
+the KL between the rollout policy and the policy at loss computation before
+SGD, the fraction of sampled action components with magnitude at least 0.95,
+and the fraction of transitions with at least one such component. The single
+SGD pass uses the same actor weights for both distributions, so this KL measures
+the effect of the observation-statistics update. The run also saves the usual
+initial and final evaluations and verifies the final checkpoint.

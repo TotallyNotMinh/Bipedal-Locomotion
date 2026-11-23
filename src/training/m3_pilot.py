@@ -1,5 +1,6 @@
 """Bounded M1 and M3 PPO training with matched initial/final evaluations."""
 
+from contextlib import nullcontext
 from functools import partial
 from hashlib import sha256
 from pathlib import Path
@@ -8,6 +9,7 @@ import math
 import sys
 import time
 from importlib.metadata import version
+from unittest.mock import patch
 
 import jax
 import jax.numpy as jp
@@ -27,6 +29,7 @@ from src.training.m3_scene import write_scene
 
 TASK = "G1JoystickFlatTerrain"
 EVAL_SEEDS = tuple(range(10_000, 10_010))
+ACTION_LIMIT_THRESHOLD = 0.95
 
 
 def enable_brax_jax_compatibility():
@@ -47,6 +50,16 @@ def enable_brax_jax_compatibility():
 
 def save_json(path, value):
     path.write_text(json.dumps(value, indent=2, allow_nan=False) + "\n")
+
+
+def with_action_metrics(compute_loss):
+    def loss(params, normalizer_params, data, rng, **kwargs):
+        value, metrics = compute_loss(params, normalizer_params, data, rng, **kwargs)
+        near_limit = jp.abs(data.action) >= ACTION_LIMIT_THRESHOLD
+        return value, dict(metrics, action_near_limit=jp.mean(near_limit),
+                           any_action_near_limit=jp.mean(jp.any(near_limit, axis=-1)))
+
+    return loss
 
 
 def evaluate(env, policy, horizon):
@@ -183,12 +196,16 @@ def run(args):
     ppo["learning_rate"] = 0.0001
     network = ppo.pop("network_factory")
     unit = nenv * ppo["unroll_length"] * ppo["action_repeat"]
-    budget = args.num_timesteps or (2 if args.smoke else 10) * unit
+    default_updates = 2 if args.smoke else (50 if args.diagnose_ppo else 10)
+    budget = args.num_timesteps or default_updates * unit
     if budget % unit:
         raise ValueError(f"--num-timesteps must be a multiple of {unit} for an exact pilot budget")
     ppo.update(num_envs=nenv, batch_size=nenv, num_minibatches=1, num_updates_per_batch=1,
                num_timesteps=budget, num_evals=1, num_eval_envs=nenv, num_resets_per_eval=0,
                run_evals=False)
+    if args.diagnose_ppo:
+        # Brax calls progress_fn with a device-averaged result at each epoch boundary.
+        ppo["num_evals"] = budget // unit + 1
     settings = dict(model=args.model, architecture=("PPO MLP with current observation" if args.model == "M1"
                                                  else "PPO MLP with observation–action history stacking"),
         task=TASK, seed=args.seed, actor_fields=[
@@ -202,6 +219,11 @@ def run(args):
         observation_shapes=observation_shapes, optimizer_updates=budget // unit,
         terrain_config=str(terrain_path.resolve()), output_dir=str(out),
         devices=[f"{d}: {d.device_kind}" for d in jax.local_devices()])
+    if args.diagnose_ppo:
+        settings["ppo_diagnostic"] = dict(
+            action_limit_threshold=ACTION_LIMIT_THRESHOLD,
+            kl="Rollout distribution vs. pre-SGD distribution with updated normalization",
+        )
     print(f"Resolved {args.model} run configuration", flush=True)
     print(json.dumps(settings, indent=2, allow_nan=False), flush=True)
     save_json(out / "settings.json", settings)
@@ -232,6 +254,24 @@ def run(args):
             label = "trained"
         save_json(out / f"{label}_evaluation.json", evaluate(env, policy, ppo["episode_length"]))
 
+    diagnostic_step = 0
+
+    def progress(steps, metrics):
+        nonlocal diagnostic_step
+        if int(steps) != diagnostic_step + unit:
+            raise ValueError(f"Expected PPO diagnostics at step {diagnostic_step + unit}, got {steps}")
+        diagnostic_step = int(steps)
+        # One minibatch and one SGD pass. The loss compares policies with the
+        # same weights, before and after Brax updates the observation statistics.
+        row = dict(environment_steps=diagnostic_step, optimizer_update=diagnostic_step // unit,
+                   pre_sgd_kl=float(metrics["training/kl_mean"]),
+                   action_near_limit_fraction=float(metrics["training/action_near_limit"]),
+                   any_action_near_limit_fraction=float(metrics["training/any_action_near_limit"]))
+        with (out / "ppo_diagnostic.jsonl").open("a") as log:
+            log.write(json.dumps(row, allow_nan=False) + "\n")
+        print(f'Update {row["optimizer_update"]}: pre-SGD KL {row["pre_sgd_kl"]:.4g}, '
+              f'actions near limits {row["action_near_limit_fraction"]:.1%}', flush=True)
+
     def record(done, totals, falls):
         for (reward, distance, length), fall in zip(np.asarray(totals)[np.asarray(done, bool)],
                                                    np.asarray(falls)[np.asarray(done, bool)]):
@@ -244,10 +284,28 @@ def run(args):
 
     enable_brax_jax_compatibility()
     start = time.monotonic()
-    _, _, metrics = train.train(environment=env, seed=args.seed, **ppo,
-        network_factory=partial(networks.make_ppo_networks, **network), wrap_env_fn=wrap,
-        save_checkpoint_path=str(out / "checkpoints"), policy_params_fn=snapshot)
+    network_factory = partial(networks.make_ppo_networks, **network)
+    train_options = dict(save_checkpoint_path=str(out / "checkpoints"), policy_params_fn=snapshot)
+    loss_hook = nullcontext()
+    if args.diagnose_ppo:
+        # Add auxiliary metrics to the existing loss, scoped to this training call.
+        loss_hook = patch.object(train.ppo_losses, "compute_ppo_loss",
+                                 with_action_metrics(train.ppo_losses.compute_ppo_loss))
+        train_options = dict(progress_fn=progress,
+                             policy_params_fn=lambda *params: snapshot(*params) if params[0] == 0 else None)
+    with loss_hook:
+        make_policy, params, metrics = train.train(
+            environment=env, seed=args.seed, **ppo, network_factory=network_factory,
+            wrap_env_fn=wrap, **train_options)
     jax.effects_barrier()
+    if args.diagnose_ppo:
+        if diagnostic_step != budget:
+            raise ValueError(f"PPO diagnostic stopped at {diagnostic_step} of {budget} steps")
+        snapshot(diagnostic_step, make_policy, params)
+        metadata = checkpoint.network_config(observation_size=observation_shapes,
+            action_size=env.action_size, normalize_observations=ppo["normalize_observations"],
+            network_factory=network_factory)
+        checkpoint.save(str(out / "checkpoints"), budget, params, metadata)
     metrics = {k: float(v) for k, v in metrics.items()}
     if not any("loss" in key for key in metrics) or not all(map(math.isfinite, metrics.values())):
         raise ValueError("Missing or non-finite PPO training diagnostics")

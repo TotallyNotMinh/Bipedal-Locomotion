@@ -18,6 +18,18 @@ def write(folder, name, value):
     (folder / name).write_text(json.dumps(value))
 
 
+def test_existing_m1_trainer_skips_notebook_patch(monkeypatch, capsys):
+    run = subprocess.run
+
+    def check_command(command, **kwargs):
+        assert command[0] != "git"
+        return run(command, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", check_command)
+    exec(CELLS["m1-4"], dict(repo=NOTEBOOK.parents[1], subprocess=subprocess, sys=sys))
+    assert "M1 trainer ready" in capsys.readouterr().out
+
+
 @pytest.fixture
 def completed_run(tmp_path):
     folder = tmp_path / "results" / "m1"
