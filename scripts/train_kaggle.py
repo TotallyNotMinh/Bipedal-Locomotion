@@ -31,33 +31,40 @@ def main():
                         help="Path to terrain configuration YAML")
     parser.add_argument("--num-envs", type=int, default=None,
                         help="Total parallel environments (sharded across GPUs)")
-    parser.add_argument("--history-len", type=int, default=5,
-                        help="Number of history timesteps (k)")
+    parser.add_argument("--history-len", type=int,
+                        help="Number of history timesteps (M1: 0, other models default to 5)")
     parser.add_argument("--seed", type=int, default=42,
                         help="Master PRNG seed")
     parser.add_argument("--output-dir", type=str, default=None,
                         help="Checkpoint and logs output directory")
-    parser.add_argument("--num-timesteps", type=int, help="Exact M3 environment step budget")
-    parser.add_argument("--smoke", action="store_true", help="Run two M3 optimizer updates (pilot default: ten)")
+    parser.add_argument("--num-timesteps", type=int, help="Exact M1 or M3 environment step budget")
+    parser.add_argument("--smoke", action="store_true", help="Run two PPO optimizer updates (pilot default: ten)")
     args = parser.parse_args()
-    if args.model == "M3":
+    if args.history_len is None:
+        args.history_len = 0 if args.model == "M1" else 5
+    if args.model in ("M1", "M3"):
+        if args.model == "M1" and args.history_len != 0:
+            parser.error("M1 uses only the current observation (--history-len 0)")
+        if args.model == "M3" and args.history_len < 1:
+            parser.error("M3 history length must be positive")
         if args.category is not None or args.difficulty != 0 or Path(args.terrain_config).resolve() != ROOT / "configs/terrain.yaml":
-            parser.error("M3 uses the established terrain configuration and curriculum")
-        if args.history_len < 1 or any(v is not None and v <= 0 for v in (args.num_envs, args.num_timesteps)):
-            parser.error("History length, environment count, and step budget must be positive")
+            parser.error(f"{args.model} uses the established terrain configuration and curriculum")
+        if any(v is not None and v <= 0 for v in (args.num_envs, args.num_timesteps)):
+            parser.error("Environment count and step budget must be positive")
         if args.smoke and args.num_timesteps is not None:
             parser.error("Choose either --smoke or an explicit --num-timesteps")
-        args.output_dir = args.output_dir or ("results/m3_smoke" if args.smoke else "results/m3_pilot")
+        kind = "smoke" if args.smoke else "pilot"
+        args.output_dir = args.output_dir or f"results/{args.model.lower()}_{kind}"
         try:
             from src.training.m3_pilot import run
         except ImportError as exc:
-            parser.exit(2, f"M3 needs the configured Playground/Brax runtime: {exc}\n")
+            parser.exit(2, f"{args.model} needs the configured Playground/Brax runtime: {exc}\n")
         run(args)
         # Release the trainer's GPU allocations before verifying in a fresh interpreter.
         os.execv(sys.executable, [sys.executable, "-m", "src.training.m3_pilot", args.output_dir])
 
     if args.num_timesteps is not None or args.smoke:
-        parser.error("--num-timesteps and --smoke apply to M3")
+        parser.error("--num-timesteps and --smoke apply to M1 and M3")
     os.environ.update(XLA_PYTHON_CLIENT_PREALLOCATE="false",
                       XLA_PYTHON_CLIENT_MEM_FRACTION="0.85", TF_FORCE_GPU_ALLOW_GROWTH="true")
     args.num_envs = args.num_envs or 4096

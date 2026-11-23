@@ -103,3 +103,19 @@ the G1 STL files from the Menagerie revision declared by Playground in
 `results/m3_robot_assets/`. The pilot reads this directory as a fallback for
 meshes missing from the installed package. On a memory-constrained GPU, run
 the pilot with `XLA_PYTHON_CLIENT_PREALLOCATE=false` for that command.
+
+### Compare M1 with the saved M3 run
+
+Run [the M1 baseline notebook](kaggle/m1-baseline.ipynb) in the configured
+Kaggle session. Set its reference path to the saved 1.6M-step M3 run. M1 uses
+the same PPO trainer, critic inputs, terrain, and evaluation seeds. Its actor
+sees the current 67 values. M3 adds five observation–action pairs for a total
+of 547 values. The notebook checks the checkpoint and prints both evaluations.
+
+From the checkout, the equivalent training command is:
+
+```bash
+XLA_PYTHON_CLIENT_PREALLOCATE=false python -u scripts/train_kaggle.py \
+  --model M1 --num-envs 8 --seed 42 --num-timesteps 1600000 \
+  --output-dir results/m1_1p6m_env8_lr1e4
+```

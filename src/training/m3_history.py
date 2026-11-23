@@ -2,8 +2,10 @@
 
 
 def initial_input(obs, action_width, length, xp):
-    if length < 1:
-        raise ValueError("history length must be positive")
+    if length == 0:
+        return obs
+    if length < 0:
+        raise ValueError("history length must be nonnegative")
     shape = (*obs.shape[:-1], length * (obs.shape[-1] + action_width))
     return xp.concatenate((obs, xp.zeros(shape, dtype=obs.dtype)), axis=-1)
 
@@ -11,6 +13,8 @@ def initial_input(obs, action_width, length, xp):
 def next_input(previous, action, observation, done, xp):
     """Advance one transition. On autoreset, observation is the new reset observation."""
     width = observation.shape[-1]
+    if previous.shape[-1] == width:
+        return observation
     pair_width = width + action.shape[-1]
     history = xp.concatenate(
         (previous[..., width + pair_width:], previous[..., :width], action), axis=-1

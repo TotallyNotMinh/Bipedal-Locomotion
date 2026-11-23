@@ -1,4 +1,4 @@
-"""Bounded M3 PPO training with matched initial/final evaluations."""
+"""Bounded M1 and M3 PPO training with matched initial/final evaluations."""
 
 from functools import partial
 from hashlib import sha256
@@ -65,7 +65,7 @@ def evaluate(env, policy, horizon):
             values = np.asarray([state.reward, state.metrics["m3_distance"],
                                  state.metrics["m3_tracking"], state.done])
             if not np.isfinite(values).all():
-                raise ValueError("Non-finite M3 evaluation transition")
+                raise ValueError("Non-finite evaluation transition")
             reward += float(values[0])
             distance += float(values[1])
             error += float(values[2])
@@ -177,7 +177,7 @@ def run(args):
     width = actor_shape.shape[-1]
     expected = width + args.history_len * (width + env.action_size)
     if observation_shapes["state"] != (expected,):
-        raise ValueError("Simulator observation shape disagrees with the M3 history contract")
+        raise ValueError("Simulator observation shape disagrees with the configured actor width")
 
     ppo = locomotion_params.brax_ppo_config(TASK).to_dict()
     ppo["learning_rate"] = 0.0001
@@ -189,7 +189,8 @@ def run(args):
     ppo.update(num_envs=nenv, batch_size=nenv, num_minibatches=1, num_updates_per_batch=1,
                num_timesteps=budget, num_evals=1, num_eval_envs=nenv, num_resets_per_eval=0,
                run_evals=False)
-    settings = dict(model="M3", architecture="PPO MLP with observation–action history stacking",
+    settings = dict(model=args.model, architecture=("PPO MLP with current observation" if args.model == "M1"
+                                                 else "PPO MLP with observation–action history stacking"),
         task=TASK, seed=args.seed, actor_fields=[
         "pelvis gyro", "projected gravity", "velocity command", "joint offsets", "joint velocities"],
         observation_width=width, actions=env.action_size, actor_width=expected,
@@ -201,7 +202,7 @@ def run(args):
         observation_shapes=observation_shapes, optimizer_updates=budget // unit,
         terrain_config=str(terrain_path.resolve()), output_dir=str(out),
         devices=[f"{d}: {d.device_kind}" for d in jax.local_devices()])
-    print("Resolved M3 run configuration", flush=True)
+    print(f"Resolved {args.model} run configuration", flush=True)
     print(json.dumps(settings, indent=2, allow_nan=False), flush=True)
     save_json(out / "settings.json", settings)
 
