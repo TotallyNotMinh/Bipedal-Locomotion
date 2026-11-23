@@ -104,13 +104,21 @@ the G1 STL files from the Menagerie revision declared by Playground in
 meshes missing from the installed package. On a memory-constrained GPU, run
 the pilot with `XLA_PYTHON_CLIENT_PREALLOCATE=false` for that command.
 
-### Compare M1 with the saved M3 run
+### Train M1 and compare it with M3
 
 Run [the M1 baseline notebook](kaggle/m1-baseline.ipynb) in the configured
-Kaggle session. Set its reference path to the saved 1.6M-step M3 run. M1 uses
-the same PPO trainer, critic inputs, terrain, and evaluation seeds. Its actor
-sees the current 67 values. M3 adds five observation–action pairs for a total
-of 547 values. The notebook checks the checkpoint and prints both evaluations.
+Kaggle session. Enable Internet for the initial clone and attach the G1 mesh dataset
+for training. The first cell clones the `m3-kaggle` branch into
+`/kaggle/working/Bipedal-Locomotion` or reuses the existing branch checkout.
+The mesh cell copies missing STL files from
+`/kaggle/input/datasets/trung1311/robot-assets/results/m3_robot_assets`.
+It also accepts `m3-robot-assets.zip` or another extracted folder. The
+notebook verifies the final M1 checkpoint and prints its initial and trained
+evaluations. To compare later, attach the saved 1.6M-step M3 run and rerun
+the optional comparison cell. Set `reference` there if the run directory has
+a different name. The two models share the PPO trainer, critic inputs, terrain,
+and evaluation seeds. M1 sees the current 67 values. M3 adds five previous
+observation–action pairs for a total of 547 values.
 
 From the checkout, the equivalent training command is:
 

@@ -1,0 +1,69 @@
+import json
+from pathlib import Path
+import shutil
+import statistics
+import subprocess
+import sys
+
+import pytest
+
+
+NOTEBOOK = Path(__file__).resolve().parents[1] / "kaggle/m1-baseline.ipynb"
+CELLS = {cell["id"]: "".join(cell["source"]) for cell in json.loads(NOTEBOOK.read_text())["cells"]}
+
+
+def write(folder, name, value):
+    (folder / name).write_text(json.dumps(value))
+
+
+@pytest.fixture
+def completed_run(tmp_path):
+    folder = tmp_path / "results" / "m1"
+    folder.mkdir(parents=True)
+    settings = dict(model="M1", history_length=0, seed=42, actor_width=67, observation_width=67,
+                    control_dt=0.02, network={"policy_obs_key": "state"},
+                    ppo=dict(num_envs=8, num_timesteps=1_600_000, learning_rate=0.0001))
+    write(folder, "settings.json", settings)
+    write(folder, "training.json", {"environment_steps": 1_600_000})
+    write(folder, "reload.json", {"action_verified": True, "checkpoint": "000001600000"})
+    episodes = [dict(seed=seed, steps=50, tracking_error_mps=1.0, episode_return=0.0, fall=True)
+                for seed in range(10_000, 10_010)]
+    for stage in ("initial", "trained"):
+        write(folder, f"{stage}_evaluation.json", {"episodes": episodes})
+    return dict(run=folder, repo=tmp_path, inputs=tmp_path / "input", seed=42,
+                num_envs=8, budget=1_600_000, env={}, statistics=statistics,
+                subprocess=subprocess, sys=sys,
+                read=lambda path, name: json.loads((path / name).read_text()))
+
+
+def test_m1_reports_without_meshes_or_reference(completed_run, monkeypatch, capsys):
+    calls = []
+    monkeypatch.setattr(subprocess, "run", lambda command, **kwargs: calls.append(command))
+    for cell in ("mesh-input", "m1-6", "m1-8", "compare-reference"):
+        exec(CELLS[cell], completed_run)
+    assert calls == [[sys.executable, "-u", "-m", "src.training.m3_pilot", str(completed_run["run"])]]
+    output = capsys.readouterr().out
+    assert "M1 / initial" in output and "M1 / trained" in output
+    assert "M3 comparison skipped" in output
+
+
+def test_recovery_rejects_m3_before_verification(completed_run, monkeypatch):
+    folder = completed_run["run"]
+    settings = completed_run["read"](folder, "settings.json")
+    write(folder, "settings.json", dict(settings, model="M3", history_length=5))
+    monkeypatch.setattr(subprocess, "run", lambda *a, **kw: pytest.fail("Unexpected recovery"))
+    with pytest.raises(ValueError, match="requested completed M1 run"):
+        exec(CELLS["m1-6"], completed_run)
+
+
+def test_fresh_run_prefers_trung1311_mesh_directory(completed_run):
+    exec(CELLS["mesh-input"], completed_run)
+    dataset = completed_run["inputs"] / "datasets/trung1311/robot-assets/results/m3_robot_assets"
+    dataset.mkdir(parents=True)
+    for name in completed_run["expected_meshes"]:
+        (dataset / name).write_bytes(name.encode())
+    (completed_run["inputs"] / "m3-robot-assets.zip").write_bytes(b"unused archive")
+    completed_run.update(run=completed_run["repo"] / "results/fresh", shutil=shutil)
+    exec(CELLS["mesh-input"], completed_run)
+    for mesh in dataset.iterdir():
+        assert (completed_run["meshes"] / mesh.name).read_bytes() == mesh.read_bytes()
