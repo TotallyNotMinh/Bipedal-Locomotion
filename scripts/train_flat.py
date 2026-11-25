@@ -128,6 +128,36 @@ def _build_network_factory(cfg: dict, obs_size, action_size: int):
     return make_networks
 
 
+def _mlp_params(in_dim: int, hidden, out_dim: int) -> int:
+    n, d = 0, int(in_dim)
+    for h in list(hidden) + [int(out_dim)]:
+        n += d * int(h) + int(h)
+        d = int(h)
+    return n
+
+
+def _param_counts(cfg: dict, obs_size, action_size: int) -> dict:
+    """Số tham số actor/critic (không tính running-statistics normalizer)."""
+    net_cfg = cfg.get("network", {})
+
+    def _dim(key):
+        if isinstance(obs_size, dict):
+            shape = obs_size[key]
+        else:
+            shape = obs_size
+        return int(np.prod(shape))
+
+    p_in = _dim(net_cfg.get("policy_obs_key", "state"))
+    v_key = net_cfg.get("value_obs_key", "privileged_state")
+    v_in = _dim(v_key if not isinstance(obs_size, dict) or v_key in obs_size
+                else net_cfg.get("policy_obs_key", "state"))
+    # Normal / tanh_normal: output = loc + scale cho mỗi action.
+    policy = _mlp_params(p_in, net_cfg.get("policy_hidden_layer_sizes", [512, 256, 128]), 2 * action_size)
+    value = _mlp_params(v_in, net_cfg.get("value_hidden_layer_sizes", [512, 256, 128]), 1)
+    return {"policy_input_dim": p_in, "value_input_dim": v_in,
+            "policy_params": policy, "value_params": value}
+
+
 def resolve_latest_checkpoint(checkpoint_path: str | Path) -> Path:
     """Resolves the latest numbered step subfolder inside a Brax `checkpoints/` directory."""
     p = Path(checkpoint_path).resolve()
@@ -184,12 +214,14 @@ def train(cfg: dict, output_dir: str):
     task_name = str(env_cfg.get("task_name", "G1JoystickFlatTerrain"))
     pg_cfg = locomotion.get_default_config(task_name)
 
-    for key in (
-        "impl", "episode_length", "action_repeat", "ctrl_dt", "sim_dt",
-        "lin_vel_x", "lin_vel_y", "ang_vel_yaw",
-    ):
-        if key in env_cfg and hasattr(pg_cfg, key):
-            setattr(pg_cfg, key, env_cfg[key])
+    # Môi trường giữ NGUYÊN default config của Playground. Chỉ cho phép chọn
+    # backend mô phỏng (impl), không đổi reward / lệnh / vật lý.
+    allowed_env_keys = {"task_name", "impl", "domain_randomization"}
+    ignored = sorted(set(env_cfg) - allowed_env_keys)
+    if ignored:
+        print(f"[!] Bỏ qua các key env không được phép override: {ignored}")
+    if "impl" in env_cfg and hasattr(pg_cfg, "impl"):
+        pg_cfg.impl = env_cfg["impl"]
 
     train_env = locomotion.load(task_name, config=pg_cfg)
     eval_env = locomotion.load(task_name, config=pg_cfg)
@@ -197,6 +229,12 @@ def train(cfg: dict, output_dir: str):
     obs_size = train_env.observation_size
     action_size = int(train_env.action_size)
     print(f"[+] obs_size={obs_size}  action_size={action_size}")
+    print(f"[+] Env (default Playground): episode_length={pg_cfg.episode_length} "
+          f"ctrl_dt={pg_cfg.ctrl_dt} lin_vel_x={list(pg_cfg.lin_vel_x)} "
+          f"lin_vel_y={list(pg_cfg.lin_vel_y)} ang_vel_yaw={list(pg_cfg.ang_vel_yaw)}")
+
+    param_counts = _param_counts(cfg, obs_size, action_size)
+    print(f"[+] Model {exp_cfg.get('model_id', '?')} params: {param_counts}")
 
     network_factory = _build_network_factory(cfg, obs_size, action_size)
     randomization_fn = _get_domain_randomizer(locomotion, task_name) if env_cfg.get("domain_randomization", True) else None
@@ -226,9 +264,9 @@ def train(cfg: dict, output_dir: str):
         "num_evals":            int(ppo_cfg.get("num_evals", 10)),
         "num_resets_per_eval":  int(ppo_cfg.get("num_resets_per_eval", 1)),
         "reward_scaling":       float(ppo_cfg.get("reward_scaling", 1.0)),
-        "episode_length":       int(env_cfg.get("episode_length", 1000)),
+        "episode_length":       int(pg_cfg.episode_length),
         "normalize_observations": bool(ppo_cfg.get("normalize_observations", True)),
-        "action_repeat":        int(env_cfg.get("action_repeat", 1)),
+        "action_repeat":        int(pg_cfg.action_repeat),
         "unroll_length":        int(ppo_cfg.get("unroll_length", 20)),
         "num_minibatches":      int(ppo_cfg.get("num_minibatches", 32)),
         "num_updates_per_batch": int(ppo_cfg.get("num_updates_per_batch", 4)),
@@ -252,7 +290,25 @@ def train(cfg: dict, output_dir: str):
     if randomization_fn is not None:
         train_kwargs["randomization_fn"] = randomization_fn
 
+    restore = ppo_cfg.get("restore_checkpoint_path")
+    if restore:
+        restore_path = resolve_latest_checkpoint(restore)
+        train_kwargs["restore_checkpoint_path"] = str(restore_path)
+        print(f"[+] Resume từ checkpoint: {restore_path}")
+
+    bs_total = train_kwargs["batch_size"] * train_kwargs["num_minibatches"]
+    if bs_total % train_kwargs["num_envs"] != 0:
+        raise ValueError(
+            f"batch_size*num_minibatches ({bs_total}) phải chia hết cho num_envs "
+            f"({train_kwargs['num_envs']})"
+        )
+    if train_kwargs["num_envs"] % len(devices) != 0:
+        raise ValueError(f"num_envs phải chia hết cho số GPU ({len(devices)})")
+
     valid_params = set(inspect.signature(ppo_train.train).parameters.keys())
+    dropped = sorted(k for k in train_kwargs if k not in valid_params)
+    if dropped:
+        print(f"[!] Brax PPO không hỗ trợ các tham số sau, bị bỏ qua: {dropped}")
     train_kwargs = {k: v for k, v in train_kwargs.items() if k in valid_params}
 
     print("[+] Starting PPO training...")
@@ -269,6 +325,8 @@ def train(cfg: dict, output_dir: str):
         "run_name": run_name,
         "seed": seed,
         "task": task_name,
+        "model_id": exp_cfg.get("model_id"),
+        "param_counts": param_counts,
         "checkpoint_dir": str(ckpt_dir),
         "total_wall_time_s": round(total_time, 2),
         "final_metrics": _to_json_safe(final_metrics),

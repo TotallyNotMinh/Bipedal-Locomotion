@@ -36,6 +36,9 @@ def main():
     parser.add_argument("--out", default="/kaggle/working/g1_flat_demo.mp4")
     parser.add_argument("--steps", type=int, default=300)
     parser.add_argument("--fps", type=int, default=30)
+    parser.add_argument("--command", type=float, nargs=3, default=[0.5, 0.0, 0.0],
+                        metavar=("VX", "VY", "WZ"),
+                        help="Lệnh vận tốc cố định (m/s, m/s, rad/s) cho demo")
     args = parser.parse_args()
 
     ckpt_path = Path(args.checkpoint).resolve()
@@ -59,6 +62,15 @@ def main():
     # Env
     task_name = cfg.get("env", {}).get("task_name", "G1JoystickFlatTerrain")
     pg_cfg = locomotion.get_default_config(task_name)
+    # Dùng ĐÚNG các override env như lúc train (dải lệnh vận tốc, dt, ...),
+    # nếu không env render sẽ sample lệnh ngoài phân phối train (đi lùi/ngang/xoay).
+    env_cfg = cfg.get("env", {})
+    for key in (
+        "impl", "episode_length", "action_repeat", "ctrl_dt", "sim_dt",
+        "lin_vel_x", "lin_vel_y", "ang_vel_yaw",
+    ):
+        if key in env_cfg and hasattr(pg_cfg, key):
+            setattr(pg_cfg, key, env_cfg[key])
     if hasattr(pg_cfg, "impl"):
         pg_cfg.impl = "jax"
     env = locomotion.load(task_name, config=pg_cfg)
@@ -157,6 +169,11 @@ def main():
     key = jax.random.PRNGKey(0)
     key, rk = jax.random.split(key)
     state = jit_reset(rk)
+    # Ghi đè lệnh ngẫu nhiên bằng lệnh cố định để video có thể so sánh được.
+    if "command" in state.info:
+        print(f"[+] Sampled command (bị ghi đè): {np.asarray(state.info['command'])}")
+        state.info["command"] = jax.numpy.asarray(args.command, dtype=jax.numpy.float32)
+        print(f"[+] Demo command: vx={args.command[0]} vy={args.command[1]} wz={args.command[2]}")
     frames = [_render_frame(state.data)]
 
     print(f"[+] Simulating {args.steps} steps...")

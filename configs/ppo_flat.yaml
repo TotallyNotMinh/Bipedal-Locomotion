@@ -1,23 +1,37 @@
+# =====================================================================
+# M2 — Capacity-matched MLP, Unitree G1, flat terrain
+#
+# Môi trường: GIỮ NGUYÊN default config của MuJoCo Playground
+#   (G1JoystickFlatTerrain: reward, lệnh vận tốc, noise, push, episode_length...).
+#   Chỉ chọn backend mô phỏng `impl: jax` (không đổi vật lý/reward; bản mới
+#   của Playground mặc định "warp" nhưng Kaggle không cài warp).
+#
+# PPO: bộ hyperparameter chính thức của MuJoCo Playground cho
+#   G1JoystickFlatTerrain (mujoco_playground/config/locomotion_params.py,
+#   brax_ppo_config): 200M steps, 8192 envs, entropy 0.005, ...
+#
+# Mạng: actor nhận o_t (obs "state", 103 chiều) giống M1, nhưng rộng hơn để
+#   số tham số actor ≈ M3 (history stacking k=5, input 103 + 5*(103+29) = 763
+#   với MLP 512-256-128 → 562,874 tham số).
+#   M2 = 896-448-128 → 559,994 tham số (-0.5%).
+#   Critic giữ giống mọi model (512-256-128 trên privileged_state) để so sánh
+#   công bằng — chỉ actor là khác nhau.
+# =====================================================================
+
 experiment:
-  name: "g1_flat"
+  name: "g1_flat_m2"
+  model_id: "M2"
   seed: 42
   output_dir: "results/flat"
 
 env:
   task_name: "G1JoystickFlatTerrain"
-  impl: "jax"
-  episode_length: 1000
-  action_repeat: 1
-  ctrl_dt: 0.02
-  sim_dt: 0.002
-  domain_randomization: true
-  lin_vel_x: [0.3, 1.0]
-  lin_vel_y: [0.0, 0.0]
-  ang_vel_yaw: [0.0, 0.0]
+  impl: "jax"                 # backend MJX, không phải tham số môi trường
+  domain_randomization: true  # randomizer chính thức của Playground cho G1
 
 ppo:
-  num_timesteps: 50000000
-  num_envs: 4096
+  num_timesteps: 100000000
+  num_envs: 8192              # nếu OOM trên 2x T4 → 4096 (giữ batch_size*num_minibatches chia hết num_envs)
   num_eval_envs: 128
   num_evals: 20
   num_resets_per_eval: 1
@@ -35,9 +49,12 @@ ppo:
   normalize_observations: true
   normalize_advantage: true
   deterministic_eval: true
+  # Train tiếp từ checkpoint (vd. khi Kaggle hết phiên). Phải cùng kiến trúc mạng.
+  # Lưu ý: Brax đếm lại num_timesteps từ 0 khi resume.
+  restore_checkpoint_path: null
 
 network:
-  policy_hidden_layer_sizes: [512, 256, 128]
+  policy_hidden_layer_sizes: [896, 448, 128]
   value_hidden_layer_sizes: [512, 256, 128]
   policy_obs_key: "state"
   value_obs_key: "privileged_state"
