@@ -184,7 +184,10 @@ def train(cfg: dict, output_dir: str):
     task_name = str(env_cfg.get("task_name", "G1JoystickFlatTerrain"))
     pg_cfg = locomotion.get_default_config(task_name)
 
-    for key in ("impl", "episode_length", "action_repeat", "ctrl_dt", "sim_dt"):
+    for key in (
+        "impl", "episode_length", "action_repeat", "ctrl_dt", "sim_dt",
+        "lin_vel_x", "lin_vel_y", "ang_vel_yaw",
+    ):
         if key in env_cfg and hasattr(pg_cfg, key):
             setattr(pg_cfg, key, env_cfg[key])
 
