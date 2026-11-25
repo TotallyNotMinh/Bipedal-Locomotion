@@ -1,5 +1,5 @@
 # =====================================================================
-# M2 — Capacity-matched MLP, Unitree G1, flat terrain
+# M2 — Larger MLP policy, Unitree G1, flat terrain
 #
 # Môi trường: GIỮ NGUYÊN default config của MuJoCo Playground
 #   (G1JoystickFlatTerrain: reward, lệnh vận tốc, noise, push, episode_length...).
@@ -8,14 +8,10 @@
 #
 # PPO: bộ hyperparameter chính thức của MuJoCo Playground cho
 #   G1JoystickFlatTerrain (mujoco_playground/config/locomotion_params.py,
-#   brax_ppo_config): 200M steps, 8192 envs, entropy 0.005, ...
+#   brax_ppo_config): 8192 envs, entropy 0.005, ... (bản gốc 200M steps, ở đây 100M)
 #
-# Mạng: actor nhận o_t (obs "state", 103 chiều) giống M1, nhưng rộng hơn để
-#   số tham số actor ≈ M3 (history stacking k=5, input 103 + 5*(103+29) = 763
-#   với MLP 512-256-128 → 562,874 tham số).
-#   M2 = 896-448-128 → 559,994 tham số (-0.5%).
-#   Critic giữ giống mọi model (512-256-128 trên privileged_state) để so sánh
-#   công bằng — chỉ actor là khác nhau.
+# Mạng: actor nhận o_t (obs "state", 103 chiều), MLP 896-448-128
+#   → 559,994 tham số. Critic 512-256-128 trên privileged_state (216 chiều).
 # =====================================================================
 
 experiment:
