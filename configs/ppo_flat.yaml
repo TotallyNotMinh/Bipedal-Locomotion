@@ -16,7 +16,7 @@ env:
   ang_vel_yaw: [0.0, 0.0]
 
 ppo:
-  num_timesteps: 14000000
+  num_timesteps: 50000000
   num_envs: 4096
   num_eval_envs: 128
   num_evals: 20
