@@ -1,0 +1,35 @@
+# Model 2 (M2) Configuration: Capacity-Matched Larger PPO MLP
+# Inherits ALL environment, terrain, reward, and PPO hyperparameters identically
+# from configs/ppo_baseline.yaml. Only policy identity and MLP capacity change.
+
+base_config: "configs/ppo_baseline.yaml"
+
+experiment:
+  name: "g1_m2_larger_mlp"
+
+network:
+  model_id: "M2"
+  # Explicit fallback MLP architecture if capacity_matching.auto_match is false.
+  # When auto_match is true, M2's policy_hidden_layer_sizes are automatically solved
+  # to match the parameter count of the M3 history-stacking reference model.
+  policy_hidden_layer_sizes: [768, 512, 256]
+  value_hidden_layer_sizes: [512, 256, 128]
+
+  capacity_matching:
+    # Set true to auto-solve M2 hidden widths to match M3/target parameter count
+    # dynamically for whatever obs_dim / action_dim the active G1 task exposes.
+    auto_match: true
+    reference_model: "M3"
+    # Reference M3 history window k and base hidden layers used to compute parameter budget
+    history_length: 5
+    include_actions: true
+    reference_policy_hidden: [512, 256, 128]
+    reference_value_hidden: [512, 256, 128]
+    # Whether to also scale critic capacity (false matches actor budget only, keeping
+    # critic identical to M1 since critic already sees privileged_state).
+    match_critic: false
+    # Optional explicit target policy parameter count (overrides reference_model if set)
+    target_policy_params: null
+    # Keep hidden layer widths aligned to multiples of 16 for GPU efficiency
+    width_step: 16
+    num_layers: 3
