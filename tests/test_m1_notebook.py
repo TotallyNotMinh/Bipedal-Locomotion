@@ -44,7 +44,8 @@ def completed_run(tmp_path):
                 for seed in range(10_000, 10_010)]
     for stage in ("initial", "trained"):
         write(folder, f"{stage}_evaluation.json", {"episodes": episodes})
-    return dict(run=folder, repo=tmp_path, inputs=tmp_path / "input", seed=42,
+    return dict(run=folder, velocity_run=None, needs_training=False,
+                repo=tmp_path, inputs=tmp_path / "input", seed=42,
                 num_envs=8, budget=1_600_000, env={}, statistics=statistics,
                 subprocess=subprocess, sys=sys, training_python=sys.executable,
                 read=lambda path, name: json.loads((path / name).read_text()))
@@ -70,7 +71,7 @@ def test_training_python_when_kernel_lacks_brax(tmp_path, monkeypatch, has_m3_en
                                            "" if ready else "No module named 'brax'")
 
     monkeypatch.setattr(subprocess, "run", run)
-    scope = dict(repo=repo, run=repo / "results/m1", env={}, os=os, Path=Path, sys=sys,
+    scope = dict(repo=repo, needs_training=True, velocity_run=None, env={}, os=os, Path=Path, sys=sys,
                  gettempdir=lambda: str(tmp_path),
                  shutil=shutil, subprocess=subprocess)
     exec(CELLS["training-python"], scope)
@@ -112,7 +113,7 @@ def test_fresh_run_prefers_trung1311_mesh_directory(completed_run):
     for name in completed_run["expected_meshes"]:
         (dataset / name).write_bytes(name.encode())
     (completed_run["inputs"] / "m3-robot-assets.zip").write_bytes(b"unused archive")
-    completed_run.update(run=completed_run["repo"] / "results/fresh", shutil=shutil)
+    completed_run.update(run=completed_run["repo"] / "results/fresh", needs_training=True, shutil=shutil)
     exec(CELLS["mesh-input"], completed_run)
     for mesh in dataset.iterdir():
         assert (completed_run["meshes"] / mesh.name).read_bytes() == mesh.read_bytes()
@@ -131,7 +132,7 @@ def test_training_python_checks_two_t4s(tmp_path, monkeypatch, kinds, expected):
     monkeypatch.setattr(sys, "argv", ["-c", "train"])
     monkeypatch.setattr(subprocess, "run",
                         lambda command, **kwargs: subprocess.CompletedProcess(command, 0, "", ""))
-    scope = dict(repo=tmp_path, run=tmp_path / "results/m1", env={}, os=os, Path=Path,
+    scope = dict(repo=tmp_path, needs_training=True, velocity_run=None, env={}, os=os, Path=Path,
                  gettempdir=lambda: str(tmp_path),
                  sys=sys, shutil=shutil, subprocess=subprocess)
     exec(CELLS["training-python"], scope)
@@ -155,3 +156,45 @@ def test_fresh_run_launches_with_selected_python(completed_run, monkeypatch):
     exec(CELLS["m1-6"], completed_run)
     assert commands[0][0] == completed_run["training_python"]
     assert commands[0][commands[0].index("--num-envs") + 1] == "8"
+
+
+def test_velocity_experiment_trains_and_reports_matched_runs(completed_run, monkeypatch, capsys):
+    read = completed_run["read"]
+    source = completed_run["run"]
+    settings = read(source, "settings.json")
+    settings.update(packages={}, devices=["T4", "T4"], terrain_sha256="same", terrain="flat",
+                    difficulty=0.0, physics_dt=0.002, warp_contact_capacity=1024,
+                    simulator_backend="warp", task="G1JoystickFlatTerrain", actions=29)
+    control = source.with_name("control")
+    variant = source.with_name("velocity")
+    completed_run.update(run=control, velocity_run=variant, budget=160_000, needs_training=True)
+
+    commands = []
+
+    def train(command, **kwargs):
+        commands.append(command)
+        assert "--diagnose-ppo" in command and "--fixed-command-eval" in command
+        folder = Path(command[command.index("--output-dir") + 1])
+        width = 69 if "--actor-velocity" in command else 67
+        assert width == (69 if folder == variant else 67)
+        folder.mkdir()
+        write(folder, "settings.json",
+              dict(settings, actor_width=width, observation_width=width,
+                   ppo=dict(settings["ppo"], num_timesteps=160_000)))
+        write(folder, "training.json", {"environment_steps": 160_000})
+        write(folder, "reload.json", {"action_verified": True, "checkpoint": "000000160000"})
+        for stage in ("initial", "trained"):
+            shutil.copyfile(source / f"{stage}_evaluation.json", folder / f"{stage}_evaluation.json")
+        episodes = [dict(ep, mean_forward_mps=0.3, foot_to_foot_contact=True)
+                    for ep in read(folder, "trained_evaluation.json")["episodes"]]
+        write(folder, "fixed_command_evaluation.json", {"scenarios": [
+            dict(forward_command_mps=speed, episodes=episodes) for speed in (0.0, 0.5)
+        ]})
+
+    monkeypatch.setattr(subprocess, "run", train)
+    exec(CELLS["m1-6"], completed_run)
+    exec(CELLS["m1-8"], completed_run)
+    assert len(commands) == 2
+    output = capsys.readouterr().out
+    assert "Verified 67-input M1" in output and "Verified 69-input M1" in output
+    assert "Foot collisions" in output and "0.50 m/s" in output

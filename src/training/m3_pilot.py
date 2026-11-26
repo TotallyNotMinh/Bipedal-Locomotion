@@ -30,6 +30,7 @@ from src.training.m3_scene import write_scene
 TASK = "G1JoystickFlatTerrain"
 EVAL_SEEDS = tuple(range(10_000, 10_010))
 ACTION_LIMIT_THRESHOLD = 0.95
+FIXED_FORWARD_COMMANDS = (0.0, 0.5)
 
 
 def enable_brax_jax_compatibility():
@@ -62,15 +63,31 @@ def with_action_metrics(compute_loss):
     return loss
 
 
-def evaluate(env, policy, horizon):
+def evaluate(env, policy, horizon, *, forward_command=None):
     reset = jax.jit(env.reset)
     step = jax.jit(env.step)
     act = jax.jit(policy)
+    if forward_command is not None:
+        command = jp.array([forward_command, 0., 0.], dtype=jp.float32)
+        contact_sensor = env.mj_model.sensor_adr[env._right_foot_left_foot_found_sensor]
+
+        @jax.jit
+        def with_command(state):
+            state = state.replace(info=dict(state.info, command=command))
+            return state.replace(obs=dict(state.obs, state=env._actor_obs(state)))
+
+        @jax.jit
+        def forward_velocity(data):
+            return env.get_local_linvel(data, "pelvis")[0]
+
     results = []
     for seed in EVAL_SEEDS:
         key = jax.random.PRNGKey(seed)
         state = reset(key)
         reward = distance = error = 0.
+        if forward_command is not None:
+            state = with_command(state)
+        forward_speed = 0.
         for length in range(1, horizon + 1):
             key, subkey = jax.random.split(key)
             action, _ = act(state.obs, subkey)
@@ -82,10 +99,18 @@ def evaluate(env, policy, horizon):
             reward += float(values[0])
             distance += float(values[1])
             error += float(values[2])
+            if forward_command is not None:
+                forward_speed += float(forward_velocity(state.data))
             if values[3]:
                 break
-        results.append(dict(seed=seed, episode_return=reward, distance_m=distance,
-                            fall=bool(values[3]), steps=length, tracking_error_mps=error / length))
+            if forward_command is not None:
+                state = with_command(state)
+        episode = dict(seed=seed, episode_return=reward, distance_m=distance,
+                       fall=bool(values[3]), steps=length, tracking_error_mps=error / length)
+        if forward_command is not None:
+            episode.update(mean_forward_mps=forward_speed / length,
+                           foot_to_foot_contact=bool(state.data.sensordata[contact_sensor] > 0))
+        results.append(episode)
     return dict(episodes=results, means={k: float(np.mean([r[k] for r in results]))
                                         for k in ("episode_return", "distance_m", "fall", "tracking_error_mps")})
 
@@ -184,7 +209,8 @@ def run(args):
     env_cfg.naconmax = min(env_cfg.naconmax, 256 * (nenv // devices))
     template = g1_constants.task_to_xml("flat_terrain")
     scene = write_scene(str(template), arena, out / "terrain")
-    env = HistoryJoystick(scene, env_cfg, args.history_len, Path("results/m3_robot_assets"))
+    env = HistoryJoystick(scene, env_cfg, args.history_len, Path("results/m3_robot_assets"),
+                          actor_velocity=args.actor_velocity)
     observation_shapes = env.observation_size
     actor_shape = jax.eval_shape(lambda key: env._actor_obs(env.reset(key)), jax.random.PRNGKey(0))
     width = actor_shape.shape[-1]
@@ -224,6 +250,9 @@ def run(args):
             action_limit_threshold=ACTION_LIMIT_THRESHOLD,
             kl="Rollout distribution vs. pre-SGD distribution with updated normalization",
         )
+    if args.actor_velocity:
+        settings["actor_velocity"] = True
+        settings["actor_fields"].append("pelvis forward and lateral velocity")
     print(f"Resolved {args.model} run configuration", flush=True)
     print(json.dumps(settings, indent=2, allow_nan=False), flush=True)
     save_json(out / "settings.json", settings)
@@ -253,6 +282,12 @@ def run(args):
             np.savez(out / "reload_probe.npz", expected_action=action, **sample.obs)
             label = "trained"
         save_json(out / f"{label}_evaluation.json", evaluate(env, policy, ppo["episode_length"]))
+        if label == "trained" and args.fixed_command_eval:
+            scenarios = [
+                dict(forward_command_mps=speed, **evaluate(env, policy, ppo["episode_length"], forward_command=speed))
+                for speed in FIXED_FORWARD_COMMANDS
+            ]
+            save_json(out / "fixed_command_evaluation.json", {"scenarios": scenarios})
 
     diagnostic_step = 0
 

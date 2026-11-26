@@ -107,7 +107,8 @@ the pilot with `XLA_PYTHON_CLIENT_PREALLOCATE=false` for that command.
 ### Train M1 and compare it with M3
 
 Run [the M1 baseline notebook](kaggle/m1-baseline.ipynb) in the configured
-Kaggle session. Enable Internet for the initial clone and attach the G1 mesh dataset
+Kaggle session with `experiment = "baseline"` for the 1.6M-step run.
+Enable Internet for the initial clone and attach the G1 mesh dataset
 for training. The first cell clones the `m3-kaggle` branch into
 `/kaggle/working/Bipedal-Locomotion` or reuses the existing branch checkout.
 The mesh cell copies missing STL files from
@@ -131,6 +132,17 @@ XLA_PYTHON_CLIENT_PREALLOCATE=false python -u scripts/train_kaggle.py \
   --model M1 --num-envs 8 --seed 42 --num-timesteps 1600000 \
   --output-dir results/m1_1p6m_env8_lr1e4
 ```
+
+### Compare the M1 actor observations
+
+Open the same notebook on two T4s and keep the default
+`experiment = "velocity"`. Use the Python environment and trainer revision
+from the low-KL M1 run. The notebook trains a 67-input control and a 69-input
+variant for 160,000 steps each. The variant adds pelvis-frame forward and
+lateral velocity. Both use eight environments, seed 42, and the same PPO
+settings. The notebook reports tracking, survival, and foot-to-foot contact
+on matched stand-still and 0.50 m/s forward commands. It saves both runs under
+`results/m1_160k_control` and `results/m1_160k_velocity_obs`.
 
 ### Diagnose the M1 PPO updates
 

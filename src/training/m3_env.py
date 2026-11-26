@@ -9,7 +9,7 @@ from src.training.m3_history import initial_input, next_input
 
 
 class HistoryJoystick(joystick.Joystick):
-    def __init__(self, scene, config, length, mesh_directory):
+    def __init__(self, scene, config, length, mesh_directory, *, actor_velocity=False):
         mjx_env.MjxEnv.__init__(self, config)
         self._xml_path = str(scene)
         self._model_assets = base.get_assets()
@@ -23,16 +23,20 @@ class HistoryJoystick(joystick.Joystick):
         self._mjx_model = mjx_env.put_model(self._mj_model, impl=config.impl)
         self._post_init()
         self.history_length = length
+        self.actor_velocity = actor_velocity
 
     def _actor_obs(self, state):
         data = state.data
-        return jp.concatenate((
+        fields = (
             self.get_gyro(data, "pelvis"),
             -data.site_xmat[self._pelvis_imu_site_id][2],
             state.info["command"],
             data.qpos[7:] - self._default_pose,
             data.qvel[6:],
-        ))
+        )
+        if self.actor_velocity:
+            fields += (self.get_local_linvel(data, "pelvis")[:2],)
+        return jp.concatenate(fields)
 
     def reset(self, rng):
         state = super().reset(rng)

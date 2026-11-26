@@ -41,9 +41,17 @@ def main():
     parser.add_argument("--smoke", action="store_true", help="Run two PPO optimizer updates (pilot default: ten)")
     parser.add_argument("--diagnose-ppo", action="store_true",
                         help="Record M1 KL and action saturation at each PPO update")
+    parser.add_argument("--actor-velocity", action="store_true",
+                        help="Append pelvis-frame forward and lateral velocity to the actor observation")
+    parser.add_argument("--fixed-command-eval", action="store_true",
+                        help="Evaluate the final M1 checkpoint at 0 and 0.5 m/s forward")
     args = parser.parse_args()
     if args.diagnose_ppo and args.model != "M1":
         parser.error("--diagnose-ppo applies to M1")
+    if args.actor_velocity and args.model not in ("M1", "M3"):
+        parser.error("--actor-velocity applies to M1 and M3")
+    if args.fixed_command_eval and args.model != "M1":
+        parser.error("--fixed-command-eval applies to M1")
     if args.history_len is None:
         args.history_len = 0 if args.model == "M1" else 5
     if args.model in ("M1", "M3"):
