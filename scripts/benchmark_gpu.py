@@ -17,11 +17,7 @@ os.environ.setdefault("XLA_PYTHON_CLIENT_MEM_FRACTION", "0.85")
 
 import jax
 import jax.numpy as jnp
-
-try:
-    from jax.sharding import PositionalSharding
-except ImportError:
-    PositionalSharding = None
+from jax.sharding import PositionalSharding
 
 
 def benchmark_multi_device_sharding(batch_size: int = 4096, steps: int = 500):
@@ -33,15 +29,7 @@ def benchmark_multi_device_sharding(batch_size: int = 4096, steps: int = 500):
         print(f"   [{i}] {dev.device_kind} (platform={dev.platform}, id={dev.id})")
     print(f"=======================================================")
 
-    if PositionalSharding is not None:
-        sharding = PositionalSharding(devices)
-        sharding_2d = sharding.reshape(num_devices, 1)
-        sharded_put = lambda arr: jax.device_put(arr, sharding_2d)
-    else:
-        from jax.sharding import Mesh, NamedSharding, PartitionSpec as P
-        mesh = Mesh(np.array(devices), ("devices",))
-        sharding_2d = NamedSharding(mesh, P("devices", None))
-        sharded_put = lambda arr: jax.device_put(arr, sharding_2d)
+    sharding = PositionalSharding(devices)
 
     # Shard environments across devices
     envs_per_device = batch_size // num_devices
@@ -67,8 +55,8 @@ def benchmark_multi_device_sharding(batch_size: int = 4096, steps: int = 500):
     actions = jax.random.normal(k2, (batch_size, action_dim))
 
     # Place sharded array across devices
-    states_sharded = sharded_put(states)
-    actions_sharded = sharded_put(actions)
+    states_sharded = jax.device_put(states, sharding.reshape(num_devices, 1))
+    actions_sharded = jax.device_put(actions, sharding.reshape(num_devices, 1))
 
     print("\n[+] Triggering initial JIT compilation...")
     t_start_compile = time.perf_counter()

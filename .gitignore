@@ -14,8 +14,3 @@ results/
 .vscode/
 .idea/
 .DS_Store
-
-# Downloaded runs / checkpoint archives (kept locally, not in git)
-g1_flat_*/
-*.zip
-downloads/
