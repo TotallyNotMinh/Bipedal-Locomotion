@@ -44,7 +44,7 @@ def completed_run(tmp_path):
                 for seed in range(10_000, 10_010)]
     for stage in ("initial", "trained"):
         write(folder, f"{stage}_evaluation.json", {"episodes": episodes})
-    return dict(run=folder, velocity_run=None, needs_training=False,
+    return dict(run=folder, variant_run=None, control_reference=None, experiment="baseline", needs_training=False,
                 repo=tmp_path, inputs=tmp_path / "input", seed=42,
                 num_envs=8, budget=1_600_000, env={}, statistics=statistics,
                 subprocess=subprocess, sys=sys, training_python=sys.executable,
@@ -71,7 +71,8 @@ def test_training_python_when_kernel_lacks_brax(tmp_path, monkeypatch, has_m3_en
                                            "" if ready else "No module named 'brax'")
 
     monkeypatch.setattr(subprocess, "run", run)
-    scope = dict(repo=repo, needs_training=True, velocity_run=None, env={}, os=os, Path=Path, sys=sys,
+    scope = dict(repo=repo, needs_training=True, experiment="baseline", env={}, os=os, Path=Path, sys=sys,
+                 json=json,
                  gettempdir=lambda: str(tmp_path),
                  shutil=shutil, subprocess=subprocess)
     exec(CELLS["training-python"], scope)
@@ -129,15 +130,18 @@ def test_training_python_checks_two_t4s(tmp_path, monkeypatch, kinds, expected):
     monkeypatch.setitem(sys.modules, "jax", SimpleNamespace(local_devices=lambda: devices))
     monkeypatch.setitem(sys.modules, "src.training.m3_pilot", SimpleNamespace(run=None))
     monkeypatch.setattr("importlib.metadata.version", lambda name: "test")
-    monkeypatch.setattr(sys, "argv", ["-c", "train"])
+    monkeypatch.setattr(sys, "argv", ["-c", "train", "{}"])
     monkeypatch.setattr(subprocess, "run",
                         lambda command, **kwargs: subprocess.CompletedProcess(command, 0, "", ""))
-    scope = dict(repo=tmp_path, needs_training=True, velocity_run=None, env={}, os=os, Path=Path,
+    scope = dict(repo=tmp_path, needs_training=True, experiment="baseline", env={}, os=os, Path=Path, json=json,
                  gettempdir=lambda: str(tmp_path),
                  sys=sys, shutil=shutil, subprocess=subprocess)
     exec(CELLS["training-python"], scope)
     if expected:
         exec(scope["probe_code"], {})
+        monkeypatch.setattr(sys, "argv", ["-c", "train", '{"jax": "other"}'])
+        with pytest.raises(SystemExit, match="saved M1 control used jax"):
+            exec(scope["probe_code"], {})
     else:
         with pytest.raises(SystemExit, match="GPU T4 x2"):
             exec(scope["probe_code"], {})
@@ -158,29 +162,31 @@ def test_fresh_run_launches_with_selected_python(completed_run, monkeypatch):
     assert commands[0][commands[0].index("--num-envs") + 1] == "8"
 
 
-def test_velocity_experiment_trains_and_reports_matched_runs(completed_run, monkeypatch, capsys):
+@pytest.mark.parametrize("experiment,width,reuse_control", [
+    ("velocity", 69, False), ("upstream", 103, False), ("upstream", 103, True),
+])
+def test_observation_experiment_trains_and_reports_matched_runs(completed_run, monkeypatch, capsys,
+                                                             experiment, width, reuse_control):
     read = completed_run["read"]
     source = completed_run["run"]
     settings = read(source, "settings.json")
     settings.update(packages={}, devices=["T4", "T4"], terrain_sha256="same", terrain="flat",
                     difficulty=0.0, physics_dt=0.002, warp_contact_capacity=1024,
-                    simulator_backend="warp", task="G1JoystickFlatTerrain", actions=29)
+                    simulator_backend="warp", task="G1JoystickFlatTerrain", actions=29,
+                    observation_shapes={"privileged_state": [216]})
+    settings["network"]["value_obs_key"] = "privileged_state"
     control = source.with_name("control")
-    variant = source.with_name("velocity")
-    completed_run.update(run=control, velocity_run=variant, budget=160_000, needs_training=True)
+    variant = source.with_name(experiment)
+    completed_run.update(run=control, variant_run=variant, experiment=experiment,
+                         budget=160_000, needs_training=True)
 
     commands = []
 
-    def train(command, **kwargs):
-        commands.append(command)
-        assert "--diagnose-ppo" in command and "--fixed-command-eval" in command
-        folder = Path(command[command.index("--output-dir") + 1])
-        width = 69 if "--actor-velocity" in command else 67
-        assert width == (69 if folder == variant else 67)
+    def save_run(folder, width):
         folder.mkdir()
         write(folder, "settings.json",
               dict(settings, actor_width=width, observation_width=width,
-                   ppo=dict(settings["ppo"], num_timesteps=160_000)))
+                   ppo=dict(settings["ppo"], num_timesteps=160_000), actor_upstream=width == 103))
         write(folder, "training.json", {"environment_steps": 160_000})
         write(folder, "reload.json", {"action_verified": True, "checkpoint": "000000160000"})
         for stage in ("initial", "trained"):
@@ -191,10 +197,21 @@ def test_velocity_experiment_trains_and_reports_matched_runs(completed_run, monk
             dict(forward_command_mps=speed, episodes=episodes) for speed in (0.0, 0.5)
         ]})
 
+    def train(command, **kwargs):
+        commands.append(command)
+        assert "--diagnose-ppo" in command and "--fixed-command-eval" in command
+        folder = Path(command[command.index("--output-dir") + 1])
+        assert (f"--actor-{experiment}" in command) == (folder == variant)
+        save_run(folder, width if folder == variant else 67)
+
+    if reuse_control:
+        save_run(control, 67)
+        completed_run["control_reference"] = control
+
     monkeypatch.setattr(subprocess, "run", train)
     exec(CELLS["m1-6"], completed_run)
     exec(CELLS["m1-8"], completed_run)
-    assert len(commands) == 2
+    assert len(commands) == (1 if reuse_control else 2)
     output = capsys.readouterr().out
-    assert "Verified 67-input M1" in output and "Verified 69-input M1" in output
+    assert "Verified 67-input M1" in output and f"Verified {width}-input M1" in output
     assert "Foot collisions" in output and "0.50 m/s" in output

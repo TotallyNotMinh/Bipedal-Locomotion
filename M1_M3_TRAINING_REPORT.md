@@ -1,6 +1,6 @@
 # M1 and M3 Training Report
 
-The 1.6 million-step Kaggle runs produced working checkpoints for both models. The updated M1 run has much lower mean KL than the first run, but all ten evaluation episodes still end early. Verify which trainer produced the updated M1 checkpoint, then use that version to test what limits flat-ground walking. Once M1 walks reliably, train M3 with the same setup and compare the benefit of history.
+The 1.6 million-step Kaggle runs produced working checkpoints for both models. The updated M1 run had much lower mean KL, and a matched 160,000-step test found that adding measured velocity reduced tracking error slightly. Both 160,000-step policies still ended every stand-still and forward trial early. The next experiment is an M1 control using the upstream Playground G1 actor observation on the same terrain and PPO setup.
 
 ## Work completed
 
@@ -33,9 +33,9 @@ A separate local check held lateral and turning commands at zero. With a stand-s
 
 **The observation and rollout budget are two other candidates.** M1 sees 67 values and leaves out direct pelvis linear velocity and foot contacts. M3 adds five previous observation–action pairs for 547 inputs. At 50 Hz this covers 0.10 s and may help the actor infer how the robot responded to a recent action. It also adds 245,760 weights to the first layer. The pilot uses 160 transitions per PPO update for both models. Testing the upstream G1 actor inputs or collecting larger rollouts can help distinguish an observation limitation from a training limitation. [Actor observation code](src/training/m3_env.py) · [Playground G1 PPO configuration](https://github.com/google-deepmind/mujoco_playground/blob/0ce4c2b9589101d239cc833c92dd5f7c8da67b9e/rss2025/mujoco_playground/config/locomotion_params.py)
 
-## What to run next on Kaggle
+## Normalization comparison on Kaggle
 
-**1. Confirm the trainer used for the updated M1 run.** Record the Kaggle notebook version, checkout commit, and any edits to Brax. If the updated run used the after-SGD change, keep it as a completed long-run result and move on to the flat-ground walking test below. If the normalization order is still unclear or needs a controlled comparison, run the 160,000-step control. Open the M1 notebook in a GPU T4 x2 session. Set `run = repo / "results/m1_160k_normalizer_before_sgd"` in the first code cell and run through **Set up the training environment**. Confirm it reports two T4s and use the checkout that includes `--diagnose-ppo` and the default before-SGD normalization order.
+**1. Confirm the trainer used for the updated M1 run.** Record the Kaggle notebook version, checkout commit, and any edits to Brax. If the updated run used the after-SGD change, keep it as a completed long-run result and move on to the flat-ground walking test below. If the normalization order is still unclear or needs a controlled comparison, open the notebook in a GPU T4 x2 session with `experiment = "upstream"` and run through **Set up the training environment**. Confirm it reports two T4s, then run the diagnostic command below in a separate cell.
 
 ```python
 subprocess.run([
@@ -56,20 +56,36 @@ Keep `ppo_diagnostic.jsonl`, `trained_evaluation.json`, `training.json`, and the
 | Pre-SGD KL drops but walking stays near one second | Test the upstream G1 actor inputs as a control on the same flat terrain. If that also fails, test a larger rollout batch in a separate M1 run. |
 | The short run looks healthy but the 1.6M run fails | Keep logging throughout a longer matched run. Check when KL and near-limit actions rise relative to episode length. |
 
-## How to get M3 walking
+## M1 velocity observation results
 
-Run the M1 notebook with `experiment = "velocity"` before changing history length or terrain. It trains a 67-input actor and a 69-input actor that also receives the pelvis-frame forward and lateral velocities. Both start from scratch and train for 160,000 steps with eight environments, seed 42, and the same terrain, commands, and PPO settings. Use the Python environment and trainer revision from the low-KL run. The notebook evaluates both checkpoints at stand-still and 0.50 m/s forward and reports foot contact, survival, and actual velocity. [M1 notebook](kaggle/m1-baseline.ipynb)
+The 67-input control and the 69-input velocity variant each trained for 160,000 steps on two T4s with eight environments, seed 42, and matching PPO settings. The heightfields were identical. Each trained policy ended all ten episodes early in both fixed-command scenarios. [67-input results](results/m1_160k_control/fixed_command_evaluation.json) · [69-input results](results/m1_160k_velocity_obs/fixed_command_evaluation.json)
 
-A practical proposed gate is **at least 8 of 10 validation episodes surviving the 20 s horizon**, with measured velocity close to the target in both fixed-command scenarios. Reserve separate scenarios for final reporting.
+| Actor | Target forward speed | Mean actual forward speed | Mean duration | Mean planar tracking error | Foot-to-foot terminations |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 67 inputs | 0.00 m/s | 0.520 m/s | 1.052 s | 1.021 m/s | 6/10 |
+| 69 inputs | 0.00 m/s | 0.529 m/s | 1.026 s | 0.972 m/s | 10/10 |
+| 67 inputs | 0.50 m/s | 0.507 m/s | 1.052 s | 0.865 m/s | 7/10 |
+| 69 inputs | 0.50 m/s | 0.543 m/s | 1.032 s | 0.827 m/s | 10/10 |
 
-Once M1 passes that gate, train **M3 with `--history-len 5`** using the same PPO settings, normalization order, terrain, and step budget. Train the first matched M1 and M3 policies from fresh initialization. If the successful M1 used the 69-input actor, add `--actor-velocity` to the M3 command. Run it from the checkout with the successful M1 trainer settings and use the same environment count and budget. The values below match the original 1.6M experiment.
+The velocity variant slightly lowered the mean planar tracking error in both scenarios. It also ended slightly sooner, with more foot-to-foot terminations. The forward-speed averages near the walking target were measured over episodes lasting about one second. Both policies still moved forward at about 0.52 m/s when told to stand still.
+
+Both runs logged 1,000 PPO updates. Pre-SGD KL started at 26.68 for the 67-input control and 25.40 for the 69-input variant. From update 11 onward, it stayed below 0.0012 in both runs. The startup shift is visible in both traces while the short-run walking failure persists. [67-input PPO trace](results/m1_160k_control/ppo_diagnostic.jsonl) · [69-input PPO trace](results/m1_160k_velocity_obs/ppo_diagnostic.jsonl)
+
+## Next M1 experiment and M3 validation
+
+Run the M1 notebook with `experiment = "upstream"` on Kaggle GPU T4 x2. Attach the saved `m1_160k_control` to reuse it. The notebook trains for 160,000 steps and saves the new run to `results/m1_160k_upstream_obs`. This variant uses the 103-input standard Playground G1 actor observation, including body velocity, previous action, and gait phase. It keeps the terrain, reward, command distribution, critic, PPO settings, seed, and eight environments matched to the control. Compare both fixed-command tests for longer episodes, fewer foot collisions, and measured speeds closer to the stand and walk targets. [M1 notebook](kaggle/m1-baseline.ipynb) · [Playground G1 joystick source](https://github.com/google-deepmind/mujoco_playground/blob/0ce4c2b9589101d239cc833c92dd5f7c8da67b9e/rss2025/mujoco_playground/_src/locomotion/g1/joystick.py)
+
+A practical proposed walking gate is **at least 8 of 10 validation episodes surviving the 20 s horizon**, with measured velocity close to each target. Reserve separate scenarios for final reporting.
+
+Once M1 passes that gate, train **M3 with `--history-len 5`** using the same actor observation fields, PPO settings, normalization order, terrain, step budget, and diagnostic flag. Train the matched policies from fresh initialization. Use `--actor-velocity` for a matched 69-input M1 or `--actor-upstream` for a matched 103-input M1. The command below matches the 160,000-step upstream pilot.
 
 ```python
 subprocess.run([
     training_python, "-u", "scripts/train_kaggle.py",
     "--model", "M3", "--history-len", "5", "--num-envs", "8",
-    "--seed", "42", "--num-timesteps", "1600000",
-    "--output-dir", "results/m3_k5_matched_walk",
+    "--seed", "42", "--num-timesteps", "160000",
+    "--actor-upstream", "--diagnose-ppo", "--fixed-command-eval",
+    "--output-dir", "results/m3_160k_upstream_obs_k5",
 ], cwd=repo, env=env, check=True)
 ```
 

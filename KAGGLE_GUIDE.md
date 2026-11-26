@@ -135,14 +135,20 @@ XLA_PYTHON_CLIENT_PREALLOCATE=false python -u scripts/train_kaggle.py \
 
 ### Compare the M1 actor observations
 
-Open the same notebook on two T4s and keep the default
-`experiment = "velocity"`. Use the Python environment and trainer revision
-from the low-KL M1 run. The notebook trains a 67-input control and a 69-input
-variant for 160,000 steps each. The variant adds pelvis-frame forward and
-lateral velocity. Both use eight environments, seed 42, and the same PPO
-settings. The notebook reports tracking, survival, and foot-to-foot contact
-on matched stand-still and 0.50 m/s forward commands. It saves both runs under
-`results/m1_160k_control` and `results/m1_160k_velocity_obs`.
+Open the same notebook on **GPU T4 x2** and keep the default
+`experiment = "upstream"`. Attach the saved `m1_160k_control` folder as a
+Kaggle input to reuse it. Keep its folder name, or set `control_reference`
+in the first cell. If the control is unavailable, the notebook trains it.
+Use the same runtime as the control. Both runs use 160,000 steps, eight
+environments, seed 42, and matching PPO settings. The new run uses the
+103-input standard Playground G1 actor observation. The notebook reports
+tracking, survival, and foot-to-foot contact on matched stand-still and
+0.50 m/s forward commands. Download `results/m1_160k_upstream_obs`
+from the notebook output.
+
+For the earlier 69-input velocity comparison, set `experiment = "velocity"`.
+That variant adds pelvis-frame forward and lateral velocity and saves to
+`results/m1_160k_velocity_obs`.
 
 ### Diagnose the M1 PPO updates
 

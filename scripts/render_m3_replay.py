@@ -123,6 +123,7 @@ def main():
         env = HistoryJoystick(
             local_scene, config, settings["history_length"], Path("results/m3_robot_assets"),
             actor_velocity=settings.get("actor_velocity", False),
+            actor_upstream=settings.get("actor_upstream", False),
         )
         reset, step = jax.jit(env.reset), jax.jit(env.step)
         trajectories = [

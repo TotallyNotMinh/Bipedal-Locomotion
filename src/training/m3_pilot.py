@@ -71,10 +71,7 @@ def evaluate(env, policy, horizon, *, forward_command=None):
         command = jp.array([forward_command, 0., 0.], dtype=jp.float32)
         contact_sensor = env.mj_model.sensor_adr[env._right_foot_left_foot_found_sensor]
 
-        @jax.jit
-        def with_command(state):
-            state = state.replace(info=dict(state.info, command=command))
-            return state.replace(obs=dict(state.obs, state=env._actor_obs(state)))
+        with_command = jax.jit(partial(env.with_command, command=command))
 
         @jax.jit
         def forward_velocity(data):
@@ -210,12 +207,11 @@ def run(args):
     template = g1_constants.task_to_xml("flat_terrain")
     scene = write_scene(str(template), arena, out / "terrain")
     env = HistoryJoystick(scene, env_cfg, args.history_len, Path("results/m3_robot_assets"),
-                          actor_velocity=args.actor_velocity)
+                          actor_velocity=args.actor_velocity, actor_upstream=args.actor_upstream)
     observation_shapes = env.observation_size
-    actor_shape = jax.eval_shape(lambda key: env._actor_obs(env.reset(key)), jax.random.PRNGKey(0))
-    width = actor_shape.shape[-1]
-    expected = width + args.history_len * (width + env.action_size)
-    if observation_shapes["state"] != (expected,):
+    (actor_width,) = observation_shapes["state"]
+    width, remainder = divmod(actor_width - args.history_len * env.action_size, args.history_len + 1)
+    if width <= 0 or remainder:
         raise ValueError("Simulator observation shape disagrees with the configured actor width")
 
     ppo = locomotion_params.brax_ppo_config(TASK).to_dict()
@@ -236,7 +232,7 @@ def run(args):
                                                  else "PPO MLP with observation–action history stacking"),
         task=TASK, seed=args.seed, actor_fields=[
         "pelvis gyro", "projected gravity", "velocity command", "joint offsets", "joint velocities"],
-        observation_width=width, actions=env.action_size, actor_width=expected,
+        observation_width=width, actions=env.action_size, actor_width=actor_width,
         history_length=args.history_len, terrain_sha256=sha256(contents).hexdigest(),
         terrain=category, difficulty=difficulty, ppo=ppo, network=network,
         warp_contact_capacity=env_cfg.naconmax,
@@ -253,6 +249,13 @@ def run(args):
     if args.actor_velocity:
         settings["actor_velocity"] = True
         settings["actor_fields"].append("pelvis forward and lateral velocity")
+    if args.actor_upstream:
+        settings["actor_upstream"] = True
+        settings["actor_fields"] = [
+            "noisy pelvis linear velocity", "noisy pelvis gyro", "noisy projected gravity",
+            "velocity command", "noisy joint offsets", "noisy joint velocities",
+            "previous action", "gait phase cosine and sine",
+        ]
     print(f"Resolved {args.model} run configuration", flush=True)
     print(json.dumps(settings, indent=2, allow_nan=False), flush=True)
     save_json(out / "settings.json", settings)

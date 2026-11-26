@@ -9,7 +9,7 @@ from src.training.m3_history import initial_input, next_input
 
 
 class HistoryJoystick(joystick.Joystick):
-    def __init__(self, scene, config, length, mesh_directory, *, actor_velocity=False):
+    def __init__(self, scene, config, length, mesh_directory, *, actor_velocity=False, actor_upstream=False):
         mjx_env.MjxEnv.__init__(self, config)
         self._xml_path = str(scene)
         self._model_assets = base.get_assets()
@@ -24,8 +24,11 @@ class HistoryJoystick(joystick.Joystick):
         self._post_init()
         self.history_length = length
         self.actor_velocity = actor_velocity
+        self.actor_upstream = actor_upstream
 
     def _actor_obs(self, state):
+        if self.actor_upstream:
+            return state.obs["state"]
         data = state.data
         fields = (
             self.get_gyro(data, "pelvis"),
@@ -37,6 +40,12 @@ class HistoryJoystick(joystick.Joystick):
         if self.actor_velocity:
             fields += (self.get_local_linvel(data, "pelvis")[:2],)
         return jp.concatenate(fields)
+
+    def with_command(self, state, command):
+        """Set the command in the simulator and the current actor frame."""
+        start = 9 if self.actor_upstream else 6
+        actor = state.obs["state"].at[..., start:start + 3].set(command)
+        return state.replace(obs=dict(state.obs, state=actor), info=dict(state.info, command=command))
 
     def reset(self, rng):
         state = super().reset(rng)
