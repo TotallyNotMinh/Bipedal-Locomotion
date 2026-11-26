@@ -145,38 +145,50 @@ def rollout(cfg, run, n_envs=None, scen_file=None):
     print(f"=== ROLLOUT checkpoint {ckpt.name} | {n_envs} env x {max_steps} bước | seed {seed} (deterministic)")
     vx, vy, wz = env._cmd_vx, env._cmd_vy, env._cmd_wz
     print(f"  Dải lệnh: vx={vx} vy={vy} wz={wz}")
-    orig = env.sample_command
     out = {}
-    for name, cmd in sc["scenarios"].items():
-        if cmd is not None:
-            assert command_in_range(cmd, vx, vy, wz), f"kịch bản {name} ngoài dải lệnh"
-            c = jnp.array(cmd, dtype=jnp.float32); env.sample_command = lambda rng, c=c: c
-        else:
-            env.sample_command = orig
 
-        def one_step(carry, _):
+    def make_run(fixed):
+        """Biên dịch 1 lần cho mỗi loại (ngẫu nhiên / lệnh cố định); lệnh là tham số, không phải closure."""
+        def one_step(carry, _, cmd):
             st, alive, key = carry
+            if fixed:                                    # ép lệnh, không cho tự lấy mẫu lại
+                info = dict(st.info); info["command"] = cmd
+                if "steps_until_next_cmd" in info:
+                    info["steps_until_next_cmd"] = jnp.full_like(info["steps_until_next_cmd"], 10**6)
+                st = st.replace(info=info)
             key, k = jax.random.split(key)
             act, _ = policy(st.obs, k)
             st = env.step(st, act)
             lin, gyro = body_vel(st.data)
-            q = st.data.qpos[3:7]                                 # độ thẳng đứng: z của trục z thân
+            q = st.data.qpos[3:7]                        # độ thẳng đứng: z của trục z thân
             up_z = 1 - 2 * (q[1] ** 2 + q[2] ** 2)
-            alive = alive & (st.done < 0.5)          # alive[t]=True: còn sống SAU bước t
+            alive = alive & (st.done < 0.5)              # alive[t]=True: còn sống SAU bước t
             rec = (st.info["command"], jnp.concatenate([lin[:2], gyro[2:3]]), alive,
                    st.data.qpos[2], up_z)
             return (st, alive, key), rec
 
         @jax.jit
-        def run_all(keys):
+        def run_all(keys, cmd):
             st = jax.vmap(env.reset)(keys)
             ks = jax.random.split(jax.random.PRNGKey(seed + 1), keys.shape[0])
             return jax.vmap(lambda s0, k: jax.lax.scan(
-                one_step, (s0, jnp.array(True), k), None, max_steps)[1])(st, ks)
+                lambda c, x: one_step(c, x, cmd), (s0, jnp.array(True), k), None, max_steps)[1])(st, ks)
+        return run_all
+
+    runners = {}
+    for name, cmd in sc["scenarios"].items():
+        if cmd is not None:
+            assert command_in_range(cmd, vx, vy, wz), f"kịch bản {name} ngoài dải lệnh"
+        fixed = cmd is not None
+        if fixed not in runners:
+            print(f"  (biên dịch {'lệnh cố định' if fixed else 'lệnh ngẫu nhiên'}, mất vài phút, chỉ 1 lần)", flush=True)
+            runners[fixed] = make_run(fixed)
+        run_all = runners[fixed]
+        cvec = jnp.array(cmd if fixed else (0., 0., 0.), dtype=jnp.float32)
 
         cmd_t, vel_t, alive_t, z_t, up_t = map(np.asarray, run_all(
-            jax.random.split(jax.random.PRNGKey(seed), n_envs)))
-        fs = fall_stats(alive_t)
+            jax.random.split(jax.random.PRNGKey(seed), n_envs), cvec))
+        fs =fall_stats(alive_t)
         tm = tracking_metrics(cmd_t, vel_t, alive_t, sc["warmup_steps"])
         r = {**fs, **tm, "command": cmd}
         # chẩn đoán ngã: tư thế ngay trước khi chết
@@ -195,7 +207,6 @@ def rollout(cfg, run, n_envs=None, scen_file=None):
         for d in diag:
             print(f"      ngã env {d['env']} ở bước {d['step']}: z={d['z']:.2f} m, up_z={d['up_z']:.2f}, "
                   f"lệnh={[round(x, 2) for x in d['command']]}")
-    env.sample_command = orig
     out["_meta"] = {"checkpoint": ckpt.name, "seed": seed, "thresholds": sc["thresholds"]}
     return out
 
