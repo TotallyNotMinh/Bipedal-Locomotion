@@ -68,18 +68,8 @@ The goal of M2 is to train a **Unitree G1 humanoid robot to walk on flat ground*
 
 ## 5. Current Status
 
-M2 is **being retrained from scratch** with the final setup (100M steps). Results will be added here after training.
-
-**How I will judge success**
-- Eval episode length should get close to 1000 (no fall in 20 s).
-- Low velocity tracking error.
-- The robot walks forward smoothly in the demo video with the 0.5 m/s command.
-
-**Planned tests after training**
-- Velocity tracking error and fall rate.
-- Recovery after pushes.
-- Walking with different floor friction, including values outside the training range.
-- Training time and inference cost.
+This section describes the old pilot. It is superseded by sections 7 and 8, where M2 is
+trained on Minh's flat terrain for 100M steps and evaluated. Final results are in section 8.
 
 ## 6. Notes and Limits
 
@@ -124,7 +114,9 @@ spawn points and commands. To make training possible I added:
 | `g1_minh_env.py` | An adapter. It builds Minh's flat terrain, replaces the `floor` of the Playground G1 scene with Minh's heightfield, and forces Minh's command ranges, spawn rule and push setting on the Playground G1 task |
 | `train_m2_flat.py` | Training script (Brax PPO) and a `--smoke` check |
 | `m2_flat.yaml` | Only what Minh does not define: PPO settings and the M2 network. No environment values here, they are read from Minh's code |
-| `m2_flat_kaggle.ipynb` | Kaggle notebook: install, smoke check, train, zip results |
+| `m2_flat_kaggle.ipynb` | Kaggle notebook: install, smoke check, train, zip results, evaluation, demo video |
+| `eval_m2_flat.py` | Checks and backs up the checkpoint, analyses training curves, rolls out the saved policy and measures velocity tracking |
+| `make_demo_video.py` | Renders the demo video: robot on the left, commanded vs actual velocity plots on the right |
 | `readme_report.md` | This report |
 
 ### 7.3 Things taken from Playground because Minh's code does not define them
@@ -166,5 +158,133 @@ so they should not be mixed into training without a team decision.
 
 ### 7.6 Status
 
-- Check on CPU: environment builds, `floor` becomes a heightfield, reset and 20 steps run.
-- **No real training has been done yet.** Run `m2_flat_kaggle.ipynb` on Kaggle.
+- Training finished (100M steps) and the policy was evaluated. See section 8.
+- Not done yet: see sections 8.8 and 8.9.
+
+## 8. Results (M2, flat terrain, seed 42)
+
+Run: `g1_flat_m2_20261126_083748`, trained on Kaggle (2× Tesla T4).
+Commit used for training: `4fc7f52`. Evaluation code: `eval_m2_flat.py` (`900db09`).
+
+### 8.1 Training
+
+| Item | Value |
+|---|---|
+| Environment steps | 102,727,680 (budget 100M, rounded up by Brax to whole batches) |
+| Wall time | 14,029 s (about 3.9 h) |
+| Throughput (average) | about 7,300 steps/s |
+| Actor / critic parameters | 559,994 / 275,457 |
+| Final eval reward | 42.28 (best, reached at the last eval) |
+| Mean of last 3 evals | 41.39 ± 0.67 |
+| Final eval episode length | 1000 / 1000 |
+
+| Step | eval reward | eval length |
+|---|---|---|
+| 21M | 3.3 | 349 |
+| 27M | 20.1 | 854 |
+| 32M | 30.4 | 986 |
+| 48M | 37.4 | 973 |
+| 70M | 41.0 | 993 |
+| 81M | 41.6 | 1000 |
+| 103M | 42.3 | 1000 |
+
+- Episode length reaches 95% of its maximum at 32M steps. After that, only the reward grows.
+- Reward grows from 37.4 (48M) to 42.3 (103M), about +7% over the second half of training.
+  It is flattening, but it was not fully flat at the end. The automatic script printed
+  "converged" with a loose 10% rule, and also "still improving" with a 5% rule. I would
+  say "close to converged"; more steps could give a small gain.
+- Largest reward terms at the end (episode sums): `tracking_lin_vel` 929, `feet_phase` 866,
+  `tracking_ang_vel` 669. Largest penalties: `feet_slip` −169, `joint_deviation_hip` −68, `pose` −48.
+
+### 8.2 Checkpoint
+
+- 19 checkpoints were saved (every 5.4M steps, from 5.4M to 102.7M), each 13–15 files and about 3.1 MB.
+- `resolved_config.yaml`, `metrics.jsonl`, `run_metadata.json` are present.
+- Backed up as `/kaggle/working/m2_flat_backup/g1_flat_m2_20261126_083748.zip` (59.2 MB)
+  and `/kaggle/working/m2_flat_results.zip`. **Download these before the Kaggle session ends.**
+- The final checkpoint (`000102727680`) was loaded again and used for the rollouts below, so
+  loading works. A formal test that a reload gives identical actions is not written yet.
+
+### 8.3 Rollout (deterministic policy, 64 envs × 1000 steps, first 1 s ignored)
+
+Commands are inside Minh's range: vx 0.2–1.0, vy ±0.3, wz ±0.5.
+
+| Scenario | Survived | Mean length | RMSE vx (m/s) | RMSE vy (m/s) | RMSE wz (rad/s) | Mean vx |
+|---|---|---|---|---|---|---|
+| Random commands | 100.0% | 1000.0 | 0.071 | 0.118 | 0.188 | +0.58 |
+| Forward vx = 0.5 | 98.4% | 985.2 | 0.054 | 0.108 | 0.162 | +0.47 |
+| Forward vx = 1.0 | 100.0% | 1000.0 | 0.080 | 0.105 | 0.179 | +0.94 |
+
+- "Survived" is the share of envs not terminated within 1000 steps (20 s). With 64 envs,
+  98.4% means one env fell in the vx = 0.5 test. The cause was not examined.
+- The first version of the script skipped sideways, turning and standing-still scenarios.
+  They used vx = 0, which is outside Minh's vx range (0.2–1.0), so the policy never saw such
+  commands in training. These scenarios are now redefined with vx ≥ 0.2 (see 8.7).
+- Velocity is measured from the pelvis (body frame, from `qpos`/`qvel`).
+- Robot walks slightly slower than commanded (mean 0.47 for 0.5, 0.94 for 1.0).
+
+### 8.4 Demo video
+
+`demo_m2.mp4`: 18 s, 6 phases of 3 s (slow forward, fast forward, turn left, turn right,
+diagonal left, diagonal right). The robot did not fall. Left: robot with tracking camera.
+Right: commanded vs actual vx, vy, wz, with the current command and speed in the title.
+RMSE over the video: vx 0.116, vy 0.156, wz 0.202. This is higher than the random-command
+rollout because the video changes the command abruptly every 3 s, and the transient is counted.
+
+### 8.5 Against the plan
+
+| Plan item | Status |
+|---|---|
+| Baseline environment of Minh not modified | Done (`git diff main` shows no change in `src/`, `configs/`, `scripts/`) |
+| M2 uses `o_t`, larger MLP (capacity control) | Done (actor 559,994 parameters) |
+| Logs, config, git commit, seed, checkpoint (Phase 3) | Done |
+| Deterministic evaluation on fixed scenarios | Done (fixed seed 123) |
+| Velocity error and fall rate | Done for flat ground |
+| Trajectory video with target and actual speed | Done |
+| Training time, parameter count | Done |
+
+### 8.6 Definitions used for the metrics
+
+Code: `m2_metrics.py` (numpy only). Tests: `tests/test_m2_metrics.py` (12 tests on synthetic
+trajectories: perfect tracking, offset error, warm-up, dead steps, falls, thresholds).
+
+- **Fall:** the environment returns `done` within the 1000 steps (20 s) of an episode. The
+  Playground termination rule is used. Minh's code defines none.
+- **Success rate = 1 − fall rate.** Falls count as failures, and the step of each fall is recorded.
+- **Velocity error:** RMSE of (actual − command) for vx, vy (body frame) and wz, over steps
+  where the robot is still alive, ignoring the first 50 steps (1 s).
+- For each fall, the script also records the pelvis height and uprightness at the step of `done`.
+
+### 8.7 Added for the flat terrain (after review against the plan)
+
+| Item | File | Status |
+|---|---|---|
+| Fixed scenario file with seed, shared by all models | `eval_scenarios.yaml` (10 scenarios, vx ≥ 0.2, inside Minh's range) | Written; a test checks the range |
+| Metric unit tests | `tests/test_m2_metrics.py` | 12 tests pass on CPU |
+| Checkpoint reload test | `tests/test_m2_checkpoint.py`, `eval_m2_flat.py --reload` | Written, **not run yet** (Kaggle, Cell 13) |
+| Library versions, VRAM, inference latency | `eval_m2_flat.py --resources` → `resources.json` | Written, **not run yet** (Cell 13) |
+| Diagnosis of the env that fell at vx = 0.5 | `eval_rollout.json` → `fall_diagnostics` | Needs the new rollout (Cell 10) |
+
+The table in 8.3 comes from the first rollout (random, 0.5, 1.0 only). Re-run Cell 10 to get all
+10 scenarios, then update 8.3.
+
+### 8.8 Open questions for the team (not decided yet)
+
+M2 is my own version, built on Minh's code. The team still has to decide which setup is final.
+
+1. **Success thresholds.** `eval_scenarios.yaml` uses placeholders (success ≥ 95%, RMSE vx and
+   vy < 0.25 m/s, wz < 0.30 rad/s), marked `provisional: true`.
+2. **Randomization.** M2 trains with no pushes and no friction switch (Minh's defaults). Is this
+   the frozen environment v1?
+3. **Observation, reward, termination.** M2 uses Playground's G1 (29 joints, 103-dim actor input,
+   Playground reward). Will M1, M3 and M4 use the same?
+4. **Seeds and budget.** One seed (42), 100M steps, about 3.9 h on 2× T4. Is 3 seeds affordable?
+5. The five code problems listed in 7.5.
+
+### 8.9 Still not done / limits
+
+1. One seed only.
+2. Flat nominal only: no pushes, no friction switch, no held-out friction.
+3. Reward still rose about 7% in the second half of training. It is close to converged, not fully flat.
+4. Reload test, resource numbers and the 10-scenario rollout have not been run on Kaggle yet.
+5. No comparison with M1, M3, M4 (not in this branch).
