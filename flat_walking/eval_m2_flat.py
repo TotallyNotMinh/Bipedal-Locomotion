@@ -103,6 +103,17 @@ def analyze_curves(run, save_png=None):
 
 
 # ---------------------------------------------------------------- 3. rollout
+def body_vel(data):
+    """Vận tốc dài (hệ toạ độ thân) và vận tốc góc của pelvis, tính trực tiếp từ qpos/qvel
+    (không phụ thuộc tên sensor/frame của Playground)."""
+    import jax.numpy as jnp
+    q, v = data.qpos[3:7], data.qvel[0:3]          # quat (w,x,y,z), vận tốc dài hệ thế giới
+    w, u = q[0], -q[1:]                            # quay ngược bằng quaternion liên hợp
+    t = 2.0 * jnp.cross(u, v)
+    lin = v + w * t + jnp.cross(u, t)
+    return lin, data.qvel[3:6]                     # khớp tự do: vận tốc góc đã ở hệ thân
+
+
 def load_policy(cfg, env, ckpt_dir):
     import jax
     from brax.training.agents.ppo import checkpoint as ppo_ckpt
@@ -145,7 +156,7 @@ def rollout(cfg, run, n_envs=64, max_steps=1000, seed=123):
             key, k = jax.random.split(key)
             act, _ = policy(st.obs, k)
             st = env.step(st, act)
-            lin = env.get_local_linvel(st.data); gyro = env.get_gyro(st.data)
+            lin, gyro = body_vel(st.data)
             rec = (st.info["command"], lin[:2], gyro[2], alive, st.data.qpos[2])
             alive = alive & (st.done < 0.5)
             return (st, alive, key), rec
