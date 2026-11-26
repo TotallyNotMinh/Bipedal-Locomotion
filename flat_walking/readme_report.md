@@ -205,23 +205,50 @@ Commit used for training: `4fc7f52`. Evaluation code: `eval_m2_flat.py` (`900db0
 - The final checkpoint (`000102727680`) was loaded again and used for the rollouts below, so
   loading works. A formal test that a reload gives identical actions is not written yet.
 
-### 8.3 Rollout (deterministic policy, 64 envs × 1000 steps, first 1 s ignored)
+### 8.3 Rollout (deterministic policy, 64 envs × 1000 steps, seed 123, first 1 s ignored)
 
-Commands are inside Minh's range: vx 0.2–1.0, vy ±0.3, wz ±0.5.
+Scenarios are in `eval_scenarios.yaml`. All commands are inside Minh's range
+(vx 0.2–1.0, vy ±0.3, wz ±0.5). Result file: `eval_rollout.json`.
 
-| Scenario | Survived | Mean length | RMSE vx (m/s) | RMSE vy (m/s) | RMSE wz (rad/s) | Mean vx |
-|---|---|---|---|---|---|---|
-| Random commands | 100.0% | 1000.0 | 0.071 | 0.118 | 0.188 | +0.58 |
-| Forward vx = 0.5 | 98.4% | 985.2 | 0.054 | 0.108 | 0.162 | +0.47 |
-| Forward vx = 1.0 | 100.0% | 1000.0 | 0.080 | 0.105 | 0.179 | +0.94 |
+| Scenario | Command (vx, vy, wz) | Fell / 64 | Mean length | RMSE vx | RMSE vy | RMSE wz | Success ≥ 95% |
+|---|---|---|---|---|---|---|---|
+| random | Minh's random sampling | 1 | 986.8 | 0.077 | 0.119 | 0.188 | yes |
+| slow | 0.2, 0, 0 | 1 | 985.0 | 0.051 | 0.098 | 0.162 | yes |
+| forward_0.5 | 0.5, 0, 0 | 1 | 985.2 | 0.055 | 0.108 | 0.163 | yes |
+| forward_1.0 | 1.0, 0, 0 | 0 | 1000.0 | 0.082 | 0.105 | 0.179 | yes |
+| left_0.3 | 0.2, 0.3, 0 | 4 | 940.2 | 0.072 | 0.142 | 0.164 | **no (93.8%)** |
+| right_0.3 | 0.2, −0.3, 0 | 5 | 927.5 | 0.103 | 0.135 | 0.186 | **no (92.2%)** |
+| turn_left | 0.2, 0, 0.5 | 1 | 985.1 | 0.073 | 0.100 | 0.209 | yes |
+| turn_right | 0.2, 0, −0.5 | 3 | 955.5 | 0.068 | 0.098 | 0.206 | yes (95.3%) |
+| fast_turn | 1.0, 0, 0.5 | 0 | 1000.0 | 0.109 | 0.126 | 0.217 | yes |
+| diagonal | 0.6, 0.3, 0.3 | 0 | 1000.0 | 0.060 | 0.154 | 0.174 | yes |
 
-- "Survived" is the share of envs not terminated within 1000 steps (20 s). With 64 envs,
-  98.4% means one env fell in the vx = 0.5 test. The cause was not examined.
-- The first version of the script skipped sideways, turning and standing-still scenarios.
-  They used vx = 0, which is outside Minh's vx range (0.2–1.0), so the policy never saw such
-  commands in training. These scenarios are now redefined with vx ≥ 0.2 (see 8.7).
-- Velocity is measured from the pelvis (body frame, from `qpos`/`qvel`).
-- Robot walks slightly slower than commanded (mean 0.47 for 0.5, 0.94 for 1.0).
+- Velocity tracking is good everywhere (RMSE vx ≤ 0.11 m/s, vy ≤ 0.15 m/s, wz ≤ 0.22 rad/s).
+- With random commands, as in training, 63 of 64 envs survive 20 s (98.4%).
+- The only scenarios below the 95% placeholder limit are `left_0.3` and `right_0.3`: low
+  forward speed (0.2 m/s) together with the maximum sideways speed (0.3 m/s).
+- The robot walks slightly slower than commanded (mean vx 0.47 for 0.5, 0.94 for 1.0).
+- Velocity is measured at the pelvis (body frame, from `qpos`/`qvel`).
+- The first version of the script skipped sideways/turning/standing scenarios because they
+  used vx = 0, outside Minh's vx range (0.2–1.0). They are now defined with vx ≥ 0.2.
+  A standing-still command is not tested, because the policy never saw it in training.
+
+**Falls (what is known and what is a guess)**
+
+Playground ends an episode (`_get_termination`) when the torso tips over (`gravity_z < 0`),
+or when the two feet touch each other, or a foot touches the other shin, or on NaN.
+
+- **Env 19 fell in 6 scenarios** (random, slow, forward_0.5, left_0.3, turn_left, turn_right),
+  at steps 41–152, already tilted (`up_z` 0.46–0.77). All scenarios use the same seed, so this
+  env has the same start state each time. It is probably a hard start, but I did not check
+  the start state. Its falls are not independent: only 9 different envs fell
+  (19, 4, 21, 36, 10, 11, 31, 40, 52).
+- **Other falls happened while the robot was still upright** (height 0.74–0.77 m, `up_z` 0.94–0.99,
+  steps 29–53): env 4, 21, 36 (left_0.3), 11, 31 (right_0.3), 31, 52 (turn_right). The torso
+  was not tipped, so the likely cause is the foot–foot or foot–shin contact rule. This is an
+  inference. **The script does not record which termination condition fired.**
+- Two falls end with a negative pelvis height (−0.50 m and −0.66 m, env 19 in left_0.3 and
+  env 40 in right_0.3). The cause is not known.
 
 ### 8.4 Demo video
 
@@ -260,13 +287,11 @@ trajectories: perfect tracking, offset error, warm-up, dead steps, falls, thresh
 | Item | File | Status |
 |---|---|---|
 | Fixed scenario file with seed, shared by all models | `eval_scenarios.yaml` (10 scenarios, vx ≥ 0.2, inside Minh's range) | Written; a test checks the range |
-| Metric unit tests | `tests/test_m2_metrics.py` | 12 tests pass on CPU |
-| Checkpoint reload test | `tests/test_m2_checkpoint.py`, `eval_m2_flat.py --reload` | Written, **not run yet** (Kaggle, Cell 13) |
-| Library versions, VRAM, inference latency | `eval_m2_flat.py --resources` → `resources.json` | Written, **not run yet** (Cell 13) |
-| Diagnosis of the env that fell at vx = 0.5 | `eval_rollout.json` → `fall_diagnostics` | Needs the new rollout (Cell 10) |
+| Metric unit tests | `tests/test_m2_metrics.py` | 12 tests pass (local and Kaggle) |
+| Checkpoint reload test | `tests/test_m2_checkpoint.py`, `eval_m2_flat.py --reload` | **Passed** on Kaggle: two loads give the same action, and the action does not depend on the PRNG |
+| Library versions, GPU, inference latency | `eval_m2_flat.py --resources` → `resources.json` | **Done** (see 8.10) |
+| Diagnosis of falls | `eval_rollout.json` → `fall_diagnostics` | Partly done: see 8.3. The termination reason is not recorded |
 
-The table in 8.3 comes from the first rollout (random, 0.5, 1.0 only). Re-run Cell 10 to get all
-10 scenarios, then update 8.3.
 
 ### 8.8 Open questions for the team (not decided yet)
 
@@ -281,10 +306,32 @@ M2 is my own version, built on Minh's code. The team still has to decide which s
 4. **Seeds and budget.** One seed (42), 100M steps, about 3.9 h on 2× T4. Is 3 seeds affordable?
 5. The five code problems listed in 7.5.
 
-### 8.9 Still not done / limits
+### 8.9 Decision on flat terrain and limits
 
-1. One seed only.
-2. Flat nominal only: no pushes, no friction switch, no held-out friction.
-3. Reward still rose about 7% in the second half of training. It is close to converged, not fully flat.
-4. Reload test, resource numbers and the 10-scenario rollout have not been run on Kaggle yet.
-5. No comparison with M1, M3, M4 (not in this branch).
+**Decision:** M2 on flat terrain is accepted as it is, with the limits below, and work moves on to
+the next terrain. No extra training was done to fix the weak corner.
+
+1. **Weak corner:** low forward speed with maximum sideways speed (vx 0.2, |vy| 0.3) gives
+   6–8% falls. The plan asks for "stable nominal locomotion with a clearly specified success
+   threshold". The threshold is not agreed, so M2 is stable on random commands (98.4%) but not
+   fully stable on every corner of the command range.
+2. **Fall cause not confirmed** (see 8.3). Recording the termination reason would settle it.
+3. **One seed only** (42), so no estimate of seed-to-seed variation. 64 envs per scenario with the same start
+   states are not independent runs.
+4. **Flat nominal only:** no pushes, no friction switch, no held-out friction.
+5. Reward still rose about 7% in the second half of training. It is close to converged, not fully flat.
+6. No comparison with M1, M3, M4 (not in this branch).
+
+### 8.10 Resources (Kaggle, 2× Tesla T4)
+
+| Item | Value |
+|---|---|
+| Python / JAX / Brax | 3.13.16 / 0.11.1 / 0.14.2 |
+| MuJoCo / MJX / Playground | 4.0.1 / 4.0.1 / 0.2.0 |
+| Flax / Optax / Orbax / NumPy | 0.12.12 / 0.2.9 / 0.12.12 / 2.1.3 |
+| Driver | 580.178.04 |
+| Policy inference | 0.18 ms (batch 1), 0.28 ms (batch 64), on GPU |
+| Checkpoint size | about 3.1 MB per step |
+| Training time | 14,029 s for 102.7M steps |
+
+Peak GPU memory is in `resources.json` (not copied here).
